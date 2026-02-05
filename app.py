@@ -819,6 +819,41 @@ def export_excel():
                 subject_lines = export_data['subject_lines_yiduan']
                 for subject, subject_data in subject_lines.get('subjects', {}).items():
                     _write_subject_line_sheet_and_chart(writer, '一段线', subject, subject_data)
+
+            # 5. 校际各学科过线率汇总（按学校为行，学科为列），分别生成“特控线-校际学科汇总 / 一段线-校际学科汇总”
+            league_subject_summary = export_data.get('league_subject_summary') or {}
+            if league_subject_summary:
+                for line_name, subjects in league_subject_summary.items():
+                    if not subjects:
+                        continue
+                    # subjects: { subject: { school_stats: [ {school_name, pass_rate, ...}, ... ] } }
+                    all_subjects = sort_subjects(list(subjects.keys()))
+                    school_set = set()
+                    for subj in all_subjects:
+                        info = subjects.get(subj) or {}
+                        for s in (info.get('school_stats') or []):
+                            name = str(s.get('school_name', '')).strip()
+                            if name:
+                                school_set.add(name)
+                    schools = sorted(school_set)
+                    if not schools or not all_subjects:
+                        continue
+                    rows = []
+                    for school_name in schools:
+                        row = {'学校': school_name}
+                        for subj in all_subjects:
+                            info = subjects.get(subj) or {}
+                            stats = info.get('school_stats') or []
+                            matched = None
+                            for s in stats:
+                                if str(s.get('school_name', '')).strip() == school_name:
+                                    matched = s
+                                    break
+                            row[f'{subj}_过线率(%)'] = matched.get('pass_rate') if matched else None
+                        rows.append(row)
+                    df_summary = pd.DataFrame(rows)
+                    sheet_name = f'{line_name}-校际学科汇总'
+                    df_summary.to_excel(writer, sheet_name=sheet_name[:31], index=False)
         
         output.seek(0)
         
