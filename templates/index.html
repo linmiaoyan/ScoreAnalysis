@@ -2096,7 +2096,7 @@
             return html;
         }
         
-        // 创建班级各科情况表格和图表（学科按语数英物化生政史地顺序）
+        // 创建班级各科情况：按学科分开展示，用选项卡切换
         function createClassSubjectsTable(data, lineName, scoreLine) {
             const allClasses = Object.keys(data.classes).sort((a, b) => (isNaN(Number(a)) || isNaN(Number(b))) ? String(a).localeCompare(b) : Number(a) - Number(b));
             const allSubjects = sortSubjects(Object.keys(data.subject_lines || {}));
@@ -2105,144 +2105,136 @@
                 return '';
             }
             
-            // 生成唯一ID
             const chartId = `class_subjects_chart_${lineName}_${Date.now()}`;
+            const tableContainerId = `${chartId}_table`;
+            const firstSubject = allSubjects[0];
             
-            // 表格（过线人数和过线率合并在一张表）
             let tableHtml = `
                 <div class="card mb-3 result-section-card">
                     <div class="card-header result-section-header result-section-header-info">
                         <h5 class="mb-0">二、${lineName} - 班级各科过线情况</h5>
                     </div>
                     <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-striped table-bordered table-sm">
-                                <thead>
-                                    <tr>
-                                        <th rowspan="2">班级</th>
-                                        ${allSubjects.map(s => `<th colspan="2">${s}</th>`).join('')}
-                                    </tr>
-                                    <tr>
-                                        ${allSubjects.map(() => '<th>过线人数</th><th>过线率(%)</th>').join('')}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${allClasses.map(class_name => `
-                                        <tr>
-                                            <td><strong>${class_name}</strong></td>
-                                            ${allSubjects.map(subject => {
-                                                const info = data.classes[class_name]?.[subject];
-                                                return `
-                                                    <td>${info ? info.passed_count : '-'}</td>
-                                                    <td>${info ? info.pass_rate.toFixed(2) : '-'}</td>
-                                                `;
-                                            }).join('')}
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
+                        <p class="text-muted mb-2">按学科查看，点击学科按钮切换</p>
+                        <div class="btn-group flex-wrap mb-3 class-subject-tabs" role="group" data-chart-id="${chartId}" data-table-id="${tableContainerId}">
+                            ${allSubjects.map(s => `
+                                <input type="radio" class="btn-check" name="${chartId}_subj" id="${chartId}_btn_${s}" value="${s}" ${s === firstSubject ? 'checked' : ''}>
+                                <label class="btn btn-outline-primary btn-sm class-subject-tab" for="${chartId}_btn_${s}">${s}</label>
+                            `).join('')}
                         </div>
-                        <div class="chart-container mt-3" id="${chartId}" style="height: 500px;"></div>
+                        <div class="class-subject-chart-wrap mb-3">
+                            <div class="chart-container" id="${chartId}" style="height: 400px;"></div>
+                        </div>
+                        <div id="${tableContainerId}" class="table-responsive mb-3">
+                            <!-- 当前学科的表格由 JS 填充 -->
+                        </div>
+                        <div class="accordion mb-0" id="${chartId}_accordion">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#${chartId}_full_table" aria-expanded="false">查看全部学科汇总表</button>
+                                </h2>
+                                <div id="${chartId}_full_table" class="accordion-collapse collapse" data-bs-parent="#${chartId}_accordion">
+                                    <div class="accordion-body p-0">
+                                        <div class="table-responsive">
+                                            <table class="table table-striped table-bordered table-sm mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th rowspan="2">班级</th>
+                                                        ${allSubjects.map(s => `<th colspan="2">${s}</th>`).join('')}
+                                                    </tr>
+                                                    <tr>
+                                                        ${allSubjects.map(() => '<th>过线人数</th><th>过线率(%)</th>').join('')}
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    ${allClasses.map(class_name => `
+                                                        <tr>
+                                                            <td><strong>${class_name}</strong></td>
+                                                            ${allSubjects.map(subject => {
+                                                                const info = data.classes[class_name]?.[subject];
+                                                                return `
+                                                                    <td>${info ? info.passed_count : '-'}</td>
+                                                                    <td>${info ? info.pass_rate.toFixed(2) : '-'}</td>
+                                                                `;
+                                                            }).join('')}
+                                                        </tr>
+                                                    `).join('')}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
             
-            // 保存图表数据，稍后渲染
+            window._classSubjectsData = window._classSubjectsData || {};
+            window._classSubjectsData[chartId] = { data, lineName, allClasses, allSubjects };
+            
             setTimeout(() => {
-                createClassSubjectsChart(chartId, data, lineName, allClasses, allSubjects);
+                renderClassSubjectView(chartId, firstSubject);
+                document.querySelectorAll(`input[name="${chartId}_subj"]`).forEach(radio => {
+                    radio.addEventListener('change', function() {
+                        if (this.checked) renderClassSubjectView(chartId, this.value);
+                    });
+                });
             }, 100);
             
             return tableHtml;
         }
         
-        // 创建班级各科情况图表
-        function createClassSubjectsChart(chartId, data, lineName, allClasses, allSubjects) {
+        // 渲染某一学科的图表和表格
+        function renderClassSubjectView(chartId, subject) {
+            const stored = window._classSubjectsData && window._classSubjectsData[chartId];
+            if (!stored) return;
+            const { data, lineName, allClasses, allSubjects } = stored;
+            if (!allSubjects.includes(subject)) return;
+            
             const container = document.getElementById(chartId);
-            if (!container) {
-                console.error(`图表容器 ${chartId} 不存在`);
-                return;
-            }
+            const tableContainer = document.getElementById(chartId + '_table');
+            if (!container) return;
             
-            // 检查是否已有echarts实例
             const existingChart = echarts.getInstanceByDom(container);
-            if (existingChart) {
-                existingChart.dispose();
-            }
+            if (existingChart) existingChart.dispose();
             
-            // 准备数据：每个学科一个系列
-            const series = allSubjects.map(subject => {
-                const passedCounts = allClasses.map(class_name => {
-                    const info = data.classes[class_name]?.[subject];
-                    return info ? info.passed_count : 0;
-                });
-                const passRates = allClasses.map(class_name => {
-                    const info = data.classes[class_name]?.[subject];
-                    return info ? info.pass_rate : 0;
-                });
-                
-                return {
-                    name: subject + '过线人数',
-                    type: 'bar',
-                    data: passedCounts,
-                    yAxisIndex: 0
-                };
-            });
-            
-            // 添加过线率折线图
-            allSubjects.forEach((subject, idx) => {
-                const passRates = allClasses.map(class_name => {
-                    const info = data.classes[class_name]?.[subject];
-                    return info ? info.pass_rate : 0;
-                });
-                series.push({
-                    name: subject + '过线率',
-                    type: 'line',
-                    data: passRates,
-                    yAxisIndex: 1,
-                    itemStyle: { color: series[idx].itemStyle?.color || '#4ecdc4' }
-                });
-            });
+            const passedCounts = allClasses.map(c => (data.classes[c]?.[subject] || {}).passed_count || 0);
+            const passRates = allClasses.map(c => (data.classes[c]?.[subject] || {}).pass_rate || 0);
             
             const chart = echarts.init(container);
-            const option = {
-                title: {
-                    text: `${lineName} - 班级各科过线情况`,
-                    left: 'center'
-                },
+            chart.setOption({
+                title: { text: `${lineName} - ${subject} 各班过线情况`, left: 'center' },
                 tooltip: {
                     trigger: 'axis',
-                    axisPointer: { type: 'cross' }
-                },
-                legend: {
-                    data: allSubjects.flatMap(s => [s + '过线人数', s + '过线率']),
-                    bottom: 10,
-                    type: 'scroll'
-                },
-                xAxis: {
-                    type: 'category',
-                    data: allClasses,
-                    axisLabel: { rotate: 45 }
-                },
-                yAxis: [
-                    {
-                        type: 'value',
-                        name: '过线人数',
-                        position: 'left'
-                    },
-                    {
-                        type: 'value',
-                        name: '过线率(%)',
-                        position: 'right',
-                        max: 100
+                    formatter: function(params) {
+                        const i = params[0].dataIndex;
+                        return allClasses[i] + '班<br/>过线人数: ' + passedCounts[i] + '<br/>过线率: ' + passRates[i] + '%';
                     }
+                },
+                legend: { data: [subject + '过线人数', subject + '过线率'], bottom: 8 },
+                xAxis: { type: 'category', name: '班级', data: allClasses, axisLabel: { rotate: 45 } },
+                yAxis: [
+                    { type: 'value', name: '过线人数', position: 'left' },
+                    { type: 'value', name: '过线率(%)', position: 'right', max: 100 }
                 ],
-                series: series
-            };
-            
-            chart.setOption(option);
-            
-            // 响应式调整
+                series: [
+                    { name: subject + '过线人数', type: 'bar', data: passedCounts, yAxisIndex: 0, itemStyle: { color: '#4ecdc4' } },
+                    { name: subject + '过线率', type: 'line', data: passRates, yAxisIndex: 1, itemStyle: { color: '#ff6b6b' }, lineStyle: { width: 2 } }
+                ]
+            });
             setTimeout(() => chart.resize(), 50);
+            
+            if (tableContainer) {
+                tableContainer.innerHTML = `
+                    <table class="table table-striped table-bordered table-sm">
+                        <thead><tr><th>班级</th><th>过线人数</th><th>过线率(%)</th></tr></thead>
+                        <tbody>
+                            ${allClasses.map((c, i) => `<tr><td><strong>${c}</strong></td><td>${passedCounts[i]}</td><td>${passRates[i]}%</td></tr>`).join('')}
+                        </tbody>
+                    </table>
+                `;
+            }
         }
         
         // 创建学科分数线详情（学科按语数英物化生政史地顺序）
@@ -2498,7 +2490,7 @@
             setTimeout(() => chart.resize(), 50);
         }
         
-        // 创建学科分数线详情图表
+        // 创建学科分数线详情图表（仅使用班级 + 过线率）
         function createSubjectLineChart(chartId, subject, subjectData, lineName) {
             const container = document.getElementById(chartId);
             if (!container) {
@@ -2524,46 +2516,30 @@
                 },
                 tooltip: {
                     trigger: 'axis',
-                    axisPointer: { type: 'cross' },
+                    axisPointer: { type: 'shadow' },
                     formatter: function(params) {
-                        let result = params[0].name + '<br/>';
-                        params.forEach(function(item) {
-                            const index = item.dataIndex;
-                            result += item.marker + item.seriesName + ': ' + item.value;
-                            if (item.seriesName === '过线率') {
-                                result += '%<br/>';
-                                result += '&nbsp;&nbsp;过线人数: ' + passedCounts[index] + '人<br/>';
-                                result += '&nbsp;&nbsp;总人数: ' + totalCounts[index] + '人';
-                            }
-                        });
-                        return result;
+                        const idx = params[0].dataIndex;
+                        return params[0].name + '班<br/>' +
+                            '过线率: <strong>' + passRates[idx] + '%</strong><br/>' +
+                            '过线人数: ' + passedCounts[idx] + ' / ' + totalCounts[idx] + '人';
                     }
-                },
-                legend: {
-                    data: ['过线率(%)', '过线人数'],
-                    bottom: 10
                 },
                 xAxis: {
                     type: 'category',
+                    name: '班级',
                     data: classNames,
                     axisLabel: { rotate: 45 }
                 },
-                yAxis: [
-                    {
-                        type: 'value',
-                        name: '过线率(%)',
-                        position: 'left',
-                        max: 100
-                    },
-                    {
-                        type: 'value',
-                        name: '过线人数',
-                        position: 'right'
-                    }
-                ],
+                yAxis: {
+                    type: 'value',
+                    name: '过线率(%)',
+                    min: 0,
+                    max: 100,
+                    axisLabel: { formatter: '{value}%' }
+                },
                 series: [
                     {
-                        name: '过线率(%)',
+                        name: '过线率',
                         type: 'bar',
                         data: passRates,
                         itemStyle: {
@@ -2579,19 +2555,6 @@
                             show: true,
                             position: 'top',
                             formatter: '{c}%'
-                        }
-                    },
-                    {
-                        name: '过线人数',
-                        type: 'line',
-                        yAxisIndex: 1,
-                        data: passedCounts,
-                        itemStyle: { color: '#f39c12' },
-                        lineStyle: { width: 3 },
-                        label: {
-                            show: true,
-                            position: 'top',
-                            formatter: '{c}'
                         }
                     }
                 ]
