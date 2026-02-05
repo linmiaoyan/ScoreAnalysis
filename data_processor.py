@@ -9,6 +9,59 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# 仅以下列为学科，参与总分计算及排名；其他列（考号、7选3、联盟排名、门数等）一律排除
+SUBJECT_COLUMNS = [
+    '语文', '数学', '英语', '日语', '物理', '化学', '生物',
+    '政治', '历史', '地理', '技术'
+]
+# 学科显示顺序
+SUBJECT_ORDER = ['语文', '数学', '英语', '日语', '物理', '化学', '生物', '政治', '历史', '地理', '技术']
+# 英语与日语为并列外语，计分时只取一科（有英语用英语，否则用日语）
+FOREIGN_LANG_SUBJECTS = ('英语', '日语')
+
+
+def _foreign_lang_series(df: pd.DataFrame) -> pd.Series:
+    """英语与日语并列，每行只取有值的一科作为外语分（优先英语，无则日语）。"""
+    out = pd.Series(np.nan, index=df.index)
+    if '英语' in df.columns:
+        out = pd.to_numeric(df['英语'], errors='coerce')
+    if '日语' in df.columns:
+        jap = pd.to_numeric(df['日语'], errors='coerce')
+        out = out.fillna(jap)
+    return out.fillna(0)
+
+
+def _compute_total_score(df: pd.DataFrame, subject_cols: List[str]) -> pd.Series:
+    """按学科列计算总分；英语与日语只计一科（有则取，不重复加）。"""
+    other = [c for c in subject_cols if c in df.columns and c not in FOREIGN_LANG_SUBJECTS]
+    part = df[other].sum(axis=1, skipna=True) if other else pd.Series(0.0, index=df.index)
+    fl = _foreign_lang_series(df)
+    return part + fl
+
+
+def sort_subjects(subject_iterable) -> List[str]:
+    """按语数英物化生政史地顺序排序学科，其余学科排在后面按名称排。"""
+    return sorted(
+        subject_iterable,
+        key=lambda s: (SUBJECT_ORDER.index(s) if s in SUBJECT_ORDER else 999, str(s))
+    )
+
+
+def _normalize_class_display(val) -> str:
+    """班级显示名：若为整数则显示为 15 而非 15.0。"""
+    if pd.isna(val):
+        return ''
+    s = str(val).strip()
+    if not s or s.lower() == 'nan':
+        return ''
+    try:
+        f = float(s)
+        if f == int(f):
+            return str(int(f))
+    except (ValueError, TypeError):
+        pass
+    return s
+
 
 def read_school_data(file_path: str) -> Dict[str, pd.DataFrame]:
     """
@@ -92,8 +145,9 @@ def read_school_data(file_path: str) -> Dict[str, pd.DataFrame]:
                             subject_df = subject_df.dropna(subset=['姓名', '得分'])
                             subject_df = subject_df[subject_df['得分'].notna()]
                             
-                            # 处理班级列：去除NaN、'nan'等
+                            # 处理班级列：去除NaN、'nan'等，并统一显示（15.0 -> 15）
                             subject_df['班级'] = subject_df['班级'].replace(['nan', 'None', ''], '')
+                            subject_df['班级'] = subject_df['班级'].apply(_normalize_class_display)
                             
                             if len(subject_df) > 0:
                                 result[subject_name] = subject_df
@@ -160,9 +214,9 @@ def read_school_data(file_path: str) -> Dict[str, pd.DataFrame]:
                     df['得分'] = pd.to_numeric(df['得分'], errors='coerce')
                     df = df.dropna(subset=['得分'])
                     
-                    # 确保班级是字符串类型
+                    # 确保班级是字符串类型，并统一显示（15.0 -> 15）
                     if '班级' in df.columns:
-                        df['班级'] = df['班级'].astype(str)
+                        df['班级'] = df['班级'].astype(str).apply(_normalize_class_display)
                     
                     if len(df) > 0:  # 只添加有数据的学科
                         result[subject] = df
@@ -188,56 +242,58 @@ def read_school_data(file_path: str) -> Dict[str, pd.DataFrame]:
         raise
 
 
-def build_school_data_from_league(league_df: pd.DataFrame, school_name: str) -> Dict[str, pd.DataFrame]:
+def build_school_data_from_league(league_df: pd.DataFrame, school_names) -> Dict[str, pd.DataFrame]:
     """
     从联盟总成绩数据中，根据“学校”字段提取我校数据，并构造成与 read_school_data 相同结构。
 
     参数:
         league_df: 通过 read_league_data 读取的联盟总成绩 DataFrame
-        school_name: 我校名称（用于匹配“学校”列）
+        school_names: 我校名称或别名列表（任一匹配即视为我校），如 ["温州科技高级中学", "温州科技"]
 
     返回:
         字典，键为学科名称（如"语文"），值为包含姓名、班级、得分的 DataFrame
     """
     result: Dict[str, pd.DataFrame] = {}
+    if isinstance(school_names, str):
+        school_names = [school_names]
+    match_names = [str(s).strip() for s in school_names if s and str(s).strip()]
 
     if league_df is None or league_df.empty:
         logger.warning("build_school_data_from_league: 联盟数据为空")
         return result
 
-    if not school_name:
-        logger.warning("build_school_data_from_league: 学校名称为空，无法从联盟数据中筛选")
+    if not match_names:
+        logger.warning("build_school_data_from_league: 学校名称列表为空，无法从联盟数据中筛选")
         return result
 
     if '学校' not in league_df.columns:
         logger.warning("build_school_data_from_league: 联盟数据中没有“学校”列，无法筛选我校数据")
         return result
 
-    # 只做精确匹配（用户保证能提供精确学校名称）
-    school_series = league_df['学校'].astype(str)
-    school_df = league_df[school_series == school_name].copy()
+    # 精确匹配：学校列的值属于 match_names 即视为我校
+    school_series = league_df['学校'].astype(str).str.strip()
+    school_df = league_df[school_series.isin(match_names)].copy()
 
     if school_df.empty:
         logger.warning(
-            f"build_school_data_from_league: 使用学校名称 '{school_name}' "
+            f"build_school_data_from_league: 使用学校名称 {match_names} "
             f"在联盟数据中没有筛选到任何记录"
         )
         return result
 
     logger.info(
-        f"build_school_data_from_league: 使用学校名称 '{school_name}' "
+        f"build_school_data_from_league: 使用学校名称 {match_names} "
         f"从联盟数据中筛选到 {len(school_df)} 条记录"
     )
 
-    # 确保姓名、班级为字符串
+    # 确保姓名、班级为字符串，班级显示为整数形式（15.0 -> 15）
     if '姓名' in school_df.columns:
         school_df['姓名'] = school_df['姓名'].astype(str).str.strip()
     if '班级' in school_df.columns:
-        school_df['班级'] = school_df['班级'].astype(str).str.strip()
+        school_df['班级'] = school_df['班级'].astype(str).str.strip().apply(_normalize_class_display)
 
-    # 按科目列拆成与 read_school_data 一致的结构
-    score_columns = ['语文', '数学', '英语', '物理', '化学', '生物', '政治', '历史', '地理']
-    available_subjects = [col for col in score_columns if col in school_df.columns]
+    # 仅白名单学科参与拆表与总分，排除考号、7选3、联盟排名、门数等
+    available_subjects = [col for col in school_df.columns if col in SUBJECT_COLUMNS]
 
     if not available_subjects:
         logger.warning("build_school_data_from_league: 在联盟数据中没有找到任何学科列")
@@ -306,9 +362,8 @@ def read_league_data(file_path: str) -> pd.DataFrame:
         
         logger.info(f"联盟数据原始列名: {list(df.columns)}")
         
-        # 预期的列名
-        expected_columns = ['学校', '姓名', '班级', '语文', '数学', '英语', 
-                          '物理', '化学', '生物', '政治', '历史', '地理']
+        # 预期的列名（用于标准化表头，学科与 SUBJECT_COLUMNS 一致）
+        expected_columns = ['学校', '姓名', '班级'] + SUBJECT_COLUMNS
         
         # 标准化列名映射
         rename_map = {}
@@ -325,29 +380,32 @@ def read_league_data(file_path: str) -> pd.DataFrame:
             df = df.rename(columns=rename_map)
             logger.info(f"联盟数据重命名后的列名: {list(df.columns)}")
         
-        # 只保留预期的列（如果存在）
-        available_columns = [col for col in expected_columns if col in df.columns]
-        if available_columns:
-            df = df[available_columns].copy()
+        # 只保留基础列 + 白名单学科列（排除考号、7选3、联盟排名、门数等非学科列），总分由程序按学科相加计算
+        base_cols = ['学校', '姓名', '班级']
+        all_keep = [col for col in df.columns if col in base_cols or col in SUBJECT_COLUMNS]
+        if all_keep:
+            df = df[all_keep].copy()
+            logger.info(f"联盟数据保留列（仅学科白名单）: {[c for c in all_keep if c not in base_cols]}")
         else:
-            logger.warning("没有找到任何预期的列，使用所有列")
+            logger.warning("没有找到任何学科列，使用预期列")
+            all_keep = [col for col in expected_columns if col in df.columns]
+            if all_keep:
+                df = df[all_keep].copy()
         
-        # 确保学校、姓名、班级是字符串类型
+        # 确保学校、姓名、班级是字符串类型，班级显示为整数形式（15.0 -> 15）
         if '学校' in df.columns:
             df['学校'] = df['学校'].astype(str)
         if '姓名' in df.columns:
             df['姓名'] = df['姓名'].astype(str)
         if '班级' in df.columns:
-            df['班级'] = df['班级'].astype(str)
+            df['班级'] = df['班级'].astype(str).apply(_normalize_class_display)
         
-        # 将各科成绩转换为数值类型
-        score_columns = ['语文', '数学', '英语', '物理', '化学', '生物', '政治', '历史', '地理']
-        for col in score_columns:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # 将各科成绩转换为数值类型（仅白名单学科）
+        score_cols = [col for col in df.columns if col in SUBJECT_COLUMNS]
+        for col in score_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # 去除所有成绩都为空的行
-        score_cols = [col for col in score_columns if col in df.columns]
         if score_cols:
             df = df.dropna(subset=score_cols, how='all')
         
@@ -372,8 +430,9 @@ def analyze_school_scores(school_data: Dict[str, pd.DataFrame], score_lines: Lis
     """
     results = {}
     
-    # 为每个学科进行分析
-    for subject, df in school_data.items():
+    # 仅分析白名单学科，排除考号、7选3等非学科
+    for subject in sort_subjects([s for s in school_data.keys() if s in SUBJECT_COLUMNS]):
+        df = school_data[subject]
         if df.empty:
             logger.warning(f"学科 {subject} 的数据为空，但仍返回空数据结构")
             # 即使数据为空，也返回空数据结构，确保前端能显示该学科
@@ -419,7 +478,7 @@ def analyze_school_scores(school_data: Dict[str, pd.DataFrame], score_lines: Lis
             try:
                 for class_name in df['班级'].dropna().unique():
                     class_df = df[df['班级'] == class_name]
-                    class_stats[str(class_name)] = {
+                    class_stats[_normalize_class_display(class_name)] = {
                         'count': int(len(class_df)),
                         'average': round(float(class_df['得分'].mean()), 2),
                         'max': round(float(class_df['得分'].max()), 2),
@@ -454,10 +513,12 @@ def analyze_school_subjects_by_class(school_data: Dict[str, pd.DataFrame], score
         logger.warning("我校数据为空，无法进行学科分析")
         return results
     
-    logger.info(f"开始分析各学科班级对比，共 {len(school_data)} 个学科")
+    # 仅分析白名单学科
+    subject_keys = [s for s in school_data.keys() if s in SUBJECT_COLUMNS]
+    logger.info(f"开始分析各学科班级对比，共 {len(subject_keys)} 个学科")
     
-    # 分析每个学科
-    for subject, df in school_data.items():
+    for subject in sort_subjects(subject_keys):
+        df = school_data[subject]
         if df.empty:
             results[subject] = {
                 'total_students': 0,
@@ -503,12 +564,10 @@ def analyze_school_subjects_by_class(school_data: Dict[str, pd.DataFrame], score
                 unique_classes = valid_classes.unique()
                 
                 for class_name in unique_classes:
-                    class_name_str = str(class_name).strip()
-                    if not class_name_str or class_name_str == 'nan':
+                    class_name_str = _normalize_class_display(class_name)
+                    if not class_name_str:
                         continue
-                    
-                    class_df = df_copy[df_copy['班级'].astype(str).str.strip() == class_name_str]
-                    
+                    class_df = df_copy[df_copy['班级'].apply(_normalize_class_display) == class_name_str]
                     class_total = len(class_df)
                     class_avg = float(class_df['得分'].mean()) if class_total > 0 else 0
                     class_max = float(class_df['得分'].max()) if class_total > 0 else 0
@@ -581,6 +640,8 @@ def analyze_school_total_score(school_data: Dict[str, pd.DataFrame], score_lines
     logger.info(f"开始合并 {len(school_data)} 个学科的数据计算总分")
     
     for subject, df in school_data.items():
+        if subject not in SUBJECT_COLUMNS:
+            continue
         if df.empty:
             logger.warning(f"学科 {subject} 数据为空，跳过")
             continue
@@ -646,16 +707,14 @@ def analyze_school_total_score(school_data: Dict[str, pd.DataFrame], score_lines
         logger.warning("无法合并学科数据计算总分：没有有效数据")
         return results
     
-    # 计算总分（所有学科得分相加，忽略NaN）
-    # 排除姓名和班级列，以及任何名为“总分”或包含“总分”的列，防止把原始总分列当作一个学科再加一次
+    # 总分：白名单学科相加，英语与日语并列只取一科
     score_columns = [
         col for col in total_score_df.columns
-        if col not in ['姓名', '班级']
-        and '总分' not in str(col)
+        if col in SUBJECT_COLUMNS
     ]
-    logger.info(f"计算总分，参与计算的学科: {score_columns}")
+    logger.info(f"计算总分，参与计算的学科: {score_columns}（英语/日语只计一科）")
     
-    total_score_df['总分'] = total_score_df[score_columns].sum(axis=1, skipna=True)
+    total_score_df['总分'] = _compute_total_score(total_score_df, score_columns)
     
     # 去除总分为NaN或0的行（这些学生可能所有学科都没有成绩）
     before_filter = len(total_score_df)
@@ -722,11 +781,10 @@ def analyze_school_total_score(school_data: Dict[str, pd.DataFrame], score_lines
                 
                 if len(unique_classes) > 0:
                     for class_name in unique_classes:
-                        class_name_str = str(class_name).strip()
-                        if not class_name_str or class_name_str == 'nan':
+                        class_name_str = _normalize_class_display(class_name)
+                        if not class_name_str:
                             continue
-                            
-                        class_df = total_score_df[total_score_df['班级'].astype(str).str.strip() == class_name_str]
+                        class_df = total_score_df[total_score_df['班级'].apply(_normalize_class_display) == class_name_str]
                         class_passed = class_df[class_df['总分'] >= line]
                         
                         class_total = len(class_df)
@@ -766,7 +824,7 @@ def analyze_school_total_score(school_data: Dict[str, pd.DataFrame], score_lines
                 
                 if len(class_series) > 0:
                     class_counts = class_series.value_counts().to_dict()
-                    class_distribution = {str(k).strip(): int(v) for k, v in class_counts.items() if str(k).strip()}
+                    class_distribution = {_normalize_class_display(k): int(v) for k, v in class_counts.items() if _normalize_class_display(k)}
             except Exception as e:
                 logger.warning(f"统计过线学生班级分布时出错: {str(e)}")
                 class_distribution = {}
@@ -778,41 +836,47 @@ def analyze_school_total_score(school_data: Dict[str, pd.DataFrame], score_lines
     return results
 
 
-def analyze_league_scores(league_df: pd.DataFrame, school_name: str, score_lines: List[float], display_name: str = None) -> Dict:
+def analyze_league_scores(league_df: pd.DataFrame, school_names, score_lines: List[float], display_name: str = None) -> Dict:
     """
     分析联盟全体成绩数据（需求2）
     
     参数:
         league_df: 联盟全体数据DataFrame
-        school_name: 我校名称（用于筛选）
+        school_names: 我校名称或别名列表（任一匹配即视为我校）
         score_lines: 分数线列表
+        display_name: 展示用校名（可选）
         
     返回:
         分析结果字典
     """
     results = {}
+    if isinstance(school_names, str):
+        school_names = [school_names]
+    match_names = [str(s).strip() for s in school_names if s and str(s).strip()]
     
-    # 计算总分（所有科目相加）
-    score_columns = ['语文', '数学', '英语', '物理', '化学', '生物', '政治', '历史', '地理']
-    available_score_cols = [col for col in score_columns if col in league_df.columns]
-    
+    # 总分：白名单学科相加，英语与日语并列只取一科
+    available_score_cols = [col for col in league_df.columns if col in SUBJECT_COLUMNS]
+
     if not available_score_cols:
         logger.warning("没有找到任何成绩列")
         return results
     
-    # 计算总分（忽略NaN值）
     league_df = league_df.copy()
-    league_df['总分'] = league_df[available_score_cols].sum(axis=1, skipna=True)
+    league_df['总分'] = _compute_total_score(league_df, available_score_cols)
     
     # 去除总分为NaN或0的行
     league_df = league_df[league_df['总分'].notna() & (league_df['总分'] > 0)]
     
-    # 筛选我校数据（只做精确匹配，用户保证学校名称准确）
-    if '学校' in league_df.columns:
-        school_df = league_df[league_df['学校'] == school_name].copy()
-        logger.info(f"使用学校名称 '{school_name}' 精确匹配到 {len(school_df)} 条记录")
+    # 筛选我校数据：学校列的值属于 match_names 即视为我校
+    if '学校' in league_df.columns and match_names:
+        school_series = league_df['学校'].astype(str).str.strip()
+        school_df = league_df[school_series.isin(match_names)].copy()
+        logger.info(f"使用学校名称 {match_names} 匹配到 {len(school_df)} 条记录")
     else:
         school_df = pd.DataFrame()
+    
+    # 数据中实际出现的我校名称（用于排名等展示）
+    my_school_name_in_data = str(school_df['学校'].iloc[0]).strip() if not school_df.empty else None
     
     # 按分数线分析
     for line in score_lines:
@@ -856,7 +920,7 @@ def analyze_league_scores(league_df: pd.DataFrame, school_name: str, score_lines
                 class_series = school_passed['班级'].dropna().astype(str)
                 if len(class_series) > 0:
                     class_counts = class_series.value_counts().to_dict()
-                    school_class_distribution = {str(k): int(v) for k, v in class_counts.items()}
+                    school_class_distribution = {_normalize_class_display(k): int(v) for k, v in class_counts.items() if _normalize_class_display(k)}
             except Exception as e:
                 logger.warning(f"统计班级分布时出错: {str(e)}")
                 school_class_distribution = {}
@@ -865,9 +929,12 @@ def analyze_league_scores(league_df: pd.DataFrame, school_name: str, score_lines
         school_class_pass_stats = []
         if not school_df.empty and '班级' in school_df.columns:
             try:
-                # 按班级统计
+                # 按班级统计（班级名显示为整数形式，如 15 而非 15.0）
                 for class_name in school_df['班级'].dropna().unique():
-                    class_df = school_df[school_df['班级'] == class_name]
+                    class_name_display = _normalize_class_display(class_name)
+                    if not class_name_display:
+                        continue
+                    class_df = school_df[school_df['班级'].apply(_normalize_class_display) == class_name_display]
                     class_passed = class_df[class_df['总分'] >= line]
                     
                     class_total = len(class_df)
@@ -876,7 +943,7 @@ def analyze_league_scores(league_df: pd.DataFrame, school_name: str, score_lines
                     class_avg_score = float(class_df['总分'].mean()) if class_total > 0 else 0
                     
                     school_class_pass_stats.append({
-                        'class_name': str(class_name),
+                        'class_name': class_name_display,
                         'total_students': int(class_total),
                         'passed_count': int(class_passed_count),
                         'pass_rate': round(class_pass_rate, 2),
@@ -889,16 +956,42 @@ def analyze_league_scores(league_df: pd.DataFrame, school_name: str, score_lines
                 logger.warning(f"统计班级特控率时出错: {str(e)}")
                 school_class_pass_stats = []
         
-        # 我校排名（在联盟中的位置）
+        # 我校排名（在联盟中的位置，即“我校的线在各校的排名”）
         school_rank = None
-        display_school_name = display_name if display_name else school_name
-        if school_name and not school_df.empty:
-            # 找到我校在按过线率排序中的位置
+        display_school_name = display_name or my_school_name_in_data or (match_names[0] if match_names else None)
+        if my_school_name_in_data:
             for idx, stat in enumerate(school_stats, 1):
-                if stat['school_name'] == school_name:
+                if str(stat['school_name']).strip() == my_school_name_in_data:
                     school_rank = idx
                     break
-        
+
+        # 我校各学科在各校之间的排名（按各科平均分排序）
+        subject_rankings = {}
+        school_subject_ranks = {}
+        for subj in sort_subjects(available_score_cols):
+            if subj not in league_df.columns:
+                continue
+            by_school = league_df.groupby('学校')[subj].mean().reset_index()
+            by_school.columns = ['学校', 'average_score']
+            by_school = by_school.dropna(subset=['average_score'])
+            by_school = by_school.sort_values('average_score', ascending=False).reset_index(drop=True)
+            by_school['rank'] = range(1, len(by_school) + 1)
+            subject_rankings[subj] = [
+                {'school_name': str(row['学校']), 'average_score': round(float(row['average_score']), 2), 'rank': int(row['rank'])}
+                for _, row in by_school.iterrows()
+            ]
+            if my_school_name_in_data:
+                my_row = by_school[by_school['学校'].astype(str).str.strip() == my_school_name_in_data]
+                if not my_row.empty:
+                    school_subject_ranks[subj] = int(my_row.iloc[0]['rank'])
+        school_subject_averages = {}
+        if my_school_name_in_data and not school_df.empty:
+            for subj in school_subject_ranks:
+                if subj in school_df.columns:
+                    avg = pd.to_numeric(school_df[subj], errors='coerce').mean()
+                    if not pd.isna(avg):
+                        school_subject_averages[subj] = round(float(avg), 2)
+
         line_results = {
             'score_line': float(line),
             'league_total': int(league_total),
@@ -910,13 +1003,83 @@ def analyze_league_scores(league_df: pd.DataFrame, school_name: str, score_lines
             'school_pass_rate': round(school_pass_rate, 2),
             'school_rank': school_rank,
             'school_class_distribution': school_class_distribution,
-            'school_class_pass_stats': school_class_pass_stats,  # 新增：各班级特控率统计
-            'school_average_score': round(float(school_df['总分'].mean()), 2) if not school_df.empty else 0
+            'school_class_pass_stats': school_class_pass_stats,
+            'school_average_score': round(float(school_df['总分'].mean()), 2) if not school_df.empty else 0,
+            'subject_rankings': subject_rankings,
+            'school_subject_ranks': school_subject_ranks,
+            'school_subject_averages': school_subject_averages
         }
         
         results[f'line_{line}'] = line_results
     
     return results
+
+
+def analyze_league_subject_lines(
+    league_df: pd.DataFrame,
+    school_names,
+    subject_lines_by_type: Dict[str, Dict[str, float]]
+) -> Dict[str, Dict[str, Dict]]:
+    """
+    按学科分数线统计各校该科过线率及排名（用户设置了学科线时使用）。
+    subject_lines_by_type 格式: { "特控线": { "语文": 100, "数学": 90 }, "一段线": { "语文": 95 } }
+    返回: { "特控线": { "语文": { score_line, school_stats, my_school_rank, my_pass_rate, ... } }, ... }
+    """
+    result = {}
+    if isinstance(school_names, str):
+        school_names = [school_names]
+    match_names = [str(s).strip() for s in school_names if s and str(s).strip()]
+    if '学校' not in league_df.columns:
+        return result
+
+    for line_name, subject_lines in (subject_lines_by_type or {}).items():
+        if not subject_lines:
+            continue
+        result[line_name] = {}
+        for subject, score_line in subject_lines.items():
+            if subject not in SUBJECT_COLUMNS or subject not in league_df.columns:
+                continue
+            try:
+                score_line = float(score_line)
+            except (TypeError, ValueError):
+                continue
+            col = pd.to_numeric(league_df[subject], errors='coerce')
+            passed = col >= score_line
+            league_df_temp = league_df.copy()
+            league_df_temp['_passed'] = passed
+            league_df_temp['_total'] = 1
+            by_school = league_df_temp.groupby('学校', as_index=False).agg(
+                total=('_total', 'sum'),
+                passed=('_passed', 'sum')
+            )
+            by_school['pass_rate'] = (by_school['passed'] / by_school['total'] * 100).round(2)
+            by_school = by_school.sort_values('pass_rate', ascending=False).reset_index(drop=True)
+            by_school['rank'] = range(1, len(by_school) + 1)
+            school_stats = [
+                {
+                    'school_name': str(row['学校']),
+                    'total_students': int(row['total']),
+                    'passed_count': int(row['passed']),
+                    'pass_rate': round(float(row['pass_rate']), 2)
+                }
+                for _, row in by_school.iterrows()
+            ]
+            my_school_name_in_data = None
+            if match_names:
+                for _, r in by_school.iterrows():
+                    if str(r['学校']).strip() in match_names:
+                        my_school_name_in_data = str(r['学校']).strip()
+                        break
+            my_row = by_school[by_school['学校'].astype(str).str.strip() == my_school_name_in_data] if my_school_name_in_data else pd.DataFrame()
+            result[line_name][subject] = {
+                'score_line': score_line,
+                'school_stats': school_stats,
+                'my_school_rank': int(my_row.iloc[0]['rank']) if len(my_row) > 0 else None,
+                'my_pass_rate': round(float(my_row.iloc[0]['pass_rate']), 2) if len(my_row) > 0 else None,
+                'my_passed_count': int(my_row.iloc[0]['passed']) if len(my_row) > 0 else None,
+                'my_total': int(my_row.iloc[0]['total']) if len(my_row) > 0 else None,
+            }
+    return result
 
 
 def analyze_subject_score_lines(school_data: Dict[str, pd.DataFrame], 
@@ -939,8 +1102,9 @@ def analyze_subject_score_lines(school_data: Dict[str, pd.DataFrame],
         'subjects': {}
     }
     
-    # 分析每个学科的分数线
-    for subject, score_line in subject_score_lines.items():
+    # 仅分析白名单学科
+    for subject in sort_subjects([s for s in subject_score_lines.keys() if s in SUBJECT_COLUMNS]):
+        score_line = subject_score_lines[subject]
         if subject not in school_data:
             logger.warning(f"学科 {subject} 不在数据中，跳过")
             continue
@@ -964,11 +1128,10 @@ def analyze_subject_score_lines(school_data: Dict[str, pd.DataFrame],
                 unique_classes = valid_classes.unique()
                 
                 for class_name in unique_classes:
-                    class_name_str = str(class_name).strip()
-                    if not class_name_str or class_name_str == 'nan':
+                    class_name_str = _normalize_class_display(class_name)
+                    if not class_name_str:
                         continue
-                    
-                    class_df = df[df['班级'].astype(str).str.strip() == class_name_str]
+                    class_df = df[df['班级'].apply(_normalize_class_display) == class_name_str]
                     class_passed = class_df[class_df['得分'] >= score_line]
                     
                     class_total = len(class_df)
@@ -1012,31 +1175,34 @@ def analyze_class_subjects_table(school_data: Dict[str, pd.DataFrame],
     返回:
         分析结果字典，包含班级×学科的过线情况
     """
+    subject_score_lines = subject_score_lines or {}
     results = {
         'score_line': score_line,
-        'subject_lines': subject_score_lines or {},
+        'subject_lines': dict(subject_score_lines),  # 会在下方补全未设置学科的默认线，供前端显示列
         'classes': {}  # {班级名: {学科名: {passed_count, pass_rate, total_students}}}
     }
     
-    # 获取所有班级和学科
+    # 获取所有班级和学科（学科按语数英物化生政史地顺序，班级显示为整数形式）
     all_classes = set()
-    all_subjects = list(school_data.keys())
-    
     for subject, df in school_data.items():
         if '班级' in df.columns:
             valid_classes = df['班级'].dropna()
-            valid_classes = valid_classes[valid_classes.astype(str).str.strip() != '']
-            valid_classes = valid_classes[valid_classes.astype(str) != 'nan']
-            all_classes.update(valid_classes.unique())
+            for c in valid_classes.unique():
+                cn = _normalize_class_display(c)
+                if cn:
+                    all_classes.add(cn)
     
-    all_classes = sorted([str(c).strip() for c in all_classes if str(c).strip() and str(c).strip() != 'nan'])
+    all_classes = sorted(all_classes, key=lambda c: (int(c) if str(c).isdigit() else 999, str(c)))
+    all_subjects = sort_subjects([s for s in school_data.keys() if s in SUBJECT_COLUMNS])
     
     # 初始化班级数据
     for class_name in all_classes:
         results['classes'][class_name] = {}
     
-    # 分析每个学科
-    for subject, df in school_data.items():
+    # 按学科顺序分析每个学科（未设置学科线时使用默认 60 分，保证一段线/特控线表格均有数据）
+    _default_subject_line = 60.0
+    for subject in all_subjects:
+        df = school_data[subject]
         if df.empty:
             continue
         
@@ -1044,14 +1210,14 @@ def analyze_class_subjects_table(school_data: Dict[str, pd.DataFrame],
         subject_line = None
         if subject_score_lines and subject in subject_score_lines:
             subject_line = subject_score_lines[subject]
-        
         if subject_line is None:
-            continue
-        
-        # 按班级统计
+            subject_line = _default_subject_line
+            results['subject_lines'][subject] = subject_line  # 供前端表头显示，并标明为默认线
+
+        # 按班级统计（班级名已统一为显示形式，如 15）
         if '班级' in df.columns:
             for class_name in all_classes:
-                class_df = df[df['班级'].astype(str).str.strip() == class_name]
+                class_df = df[df['班级'].apply(_normalize_class_display) == class_name]
                 if len(class_df) == 0:
                     continue
                 
@@ -1089,7 +1255,10 @@ def calculate_class_assessment(school_data: Dict[str, pd.DataFrame],
     has_class_column = False
     excluded_students: List[Dict] = []  # 记录缺考或成绩异常的学生
     
+    has_class_column = False
     for subject, df in school_data.items():
+        if subject not in SUBJECT_COLUMNS:
+            continue
         if df.empty:
             continue
         
@@ -1147,15 +1316,15 @@ def calculate_class_assessment(school_data: Dict[str, pd.DataFrame],
         for _, row in excluded_df.iterrows():
             excluded_students.append({
                 "姓名": str(row.get('姓名', '')).strip(),
-                "班级": str(row.get('班级', '')).strip(),
+                "班级": _normalize_class_display(row.get('班级', '')),
                 "原因": "总分缺失或为0"
             })
         
         total_score_df = total_score_df[~invalid_mask].copy()
     else:
-        # 没有原始总分列，则通过各科成绩计算总分
-        subject_columns = [col for col in total_score_df.columns if col not in ['姓名', '班级']]
-        
+        # 没有原始总分列，则仅用白名单学科列计算总分
+        subject_columns = [col for col in total_score_df.columns if col in SUBJECT_COLUMNS]
+
         if not subject_columns:
             return {"class_results": [], "excluded_students": []}
         
@@ -1165,7 +1334,7 @@ def calculate_class_assessment(school_data: Dict[str, pd.DataFrame],
         for _, row in excluded_df.iterrows():
             excluded_students.append({
                 "姓名": str(row.get('姓名', '')).strip(),
-                "班级": str(row.get('班级', '')).strip(),
+                "班级": _normalize_class_display(row.get('班级', '')),
                 "原因": "存在缺考或成绩缺失"
             })
         
@@ -1174,8 +1343,8 @@ def calculate_class_assessment(school_data: Dict[str, pd.DataFrame],
         if total_score_df.empty:
             return {"class_results": [], "excluded_students": excluded_students}
         
-        # 计算总分（所有学科得分相加）
-        total_score_df['总分'] = total_score_df[subject_columns].sum(axis=1, skipna=False)
+        # 计算总分（英语与日语并列只取一科）
+        total_score_df['总分'] = _compute_total_score(total_score_df, subject_columns)
     
     if total_score_df.empty or '班级' not in total_score_df.columns:
         return {"class_results": [], "excluded_students": excluded_students}
@@ -1188,11 +1357,10 @@ def calculate_class_assessment(school_data: Dict[str, pd.DataFrame],
     unique_classes = valid_classes.unique()
     
     for class_name in unique_classes:
-        class_name_str = str(class_name).strip()
-        if not class_name_str or class_name_str == 'nan':
+        class_name_str = _normalize_class_display(class_name)
+        if not class_name_str:
             continue
-        
-        class_df = total_score_df[total_score_df['班级'].astype(str).str.strip() == class_name_str]
+        class_df = total_score_df[total_score_df['班级'].apply(_normalize_class_display) == class_name_str]
         
         class_total = len(class_df)
         tekong_passed = len(class_df[class_df['总分'] >= tekong_line])
@@ -1202,7 +1370,7 @@ def calculate_class_assessment(school_data: Dict[str, pd.DataFrame],
         yiduan_rate = (yiduan_passed / class_total * 100) if class_total > 0 else 0
         
         # 计算考核分
-        assessment_score = 0.3 * tekong_rate + 0.7 * yiduan_rate
+        assessment_score = (0.3 * tekong_rate + 0.7 * yiduan_rate)*0.01
         
         class_results.append({
             'class_name': class_name_str,

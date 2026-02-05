@@ -9,10 +9,11 @@ from werkzeug.utils import secure_filename
 from datetime import datetime
 
 from data_processor import (read_school_data, read_league_data, analyze_school_scores, 
-                            analyze_league_scores, analyze_school_total_score, 
-                            analyze_school_subjects_by_class, analyze_subject_score_lines,
-                            analyze_class_subjects_table, calculate_class_assessment,
-                            build_school_data_from_league)
+                            analyze_league_scores, analyze_league_subject_lines,
+                            analyze_school_total_score, analyze_school_subjects_by_class,
+                            analyze_subject_score_lines, analyze_class_subjects_table,
+                            calculate_class_assessment, build_school_data_from_league,
+                            sort_subjects, SUBJECT_COLUMNS)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -32,17 +33,23 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 
+def _parse_school_names(data: dict):
+    """从请求中解析学校名称列表，兼容旧字段 school_name / school_alias。"""
+    names = data.get('school_names') or []
+    if not names and (data.get('school_name') or data.get('school_alias')):
+        names = [data.get('school_name', '').strip(), data.get('school_alias', '').strip()]
+    return [str(s).strip() for s in names if s and str(s).strip()]
+
+
 def _get_school_data_from_sources(school_path: str,
                                   league_path: str,
-                                  school_name: str,
-                                  school_alias: str):
+                                  school_names: list):
     """
     根据传入的路径和学校名称，优先使用 school_path 读取我校数据；
     如果没有上传我校文件，则尝试从联盟总成绩文件中按“学校”字段筛选构造我校数据。
     """
-    school_name = school_name or ''
-    school_alias = school_alias or ''
-    match_name = school_alias.strip() if school_alias.strip() else school_name.strip()
+    school_names = school_names or []
+    match_names = [str(s).strip() for s in school_names if s and str(s).strip()]
 
     # 1. 优先使用单独上传的我校文件
     if school_path:
@@ -55,14 +62,14 @@ def _get_school_data_from_sources(school_path: str,
 
     # 2. 没有我校文件时，尝试从联盟总成绩中构建
     if league_path:
-        if not match_name:
+        if not match_names:
             raise ValueError("未提供学校名称或别名，无法从联盟总成绩中筛选我校数据")
 
         league_df = read_league_data(league_path)
-        derived_school_data = build_school_data_from_league(league_df, match_name)
+        derived_school_data = build_school_data_from_league(league_df, match_names)
 
         if not derived_school_data:
-            raise ValueError(f"在联盟总成绩中未找到学校名称为“{match_name}”的任何记录，无法构建我校数据")
+            raise ValueError(f"在联盟总成绩中未找到学校名称为“{match_names}”的任何记录，无法构建我校数据")
 
         logger.info(
             f"_get_school_data_from_sources: 未上传我校文件，已从联盟总成绩中构建我校数据，"
@@ -85,69 +92,29 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    """上传文件"""
+    """上传【联盟全体数据】文件（仅此一种）"""
     try:
-        school_file = request.files.get('school_file')
         league_file = request.files.get('league_file')
-        
-        school_path = None
-        league_path = None
-        
-        # 允许只上传一个文件
-        if school_file and school_file.filename:
-            school_filename = secure_filename(school_file.filename)
-            school_path = os.path.join(UPLOAD_FOLDER, f"school_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{school_filename}")
-            school_file.save(school_path)
-        
-        if league_file and league_file.filename:
-            league_filename = secure_filename(league_file.filename)
-            league_path = os.path.join(UPLOAD_FOLDER, f"league_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{league_filename}")
-            league_file.save(league_path)
-        
-        if not school_path and not league_path:
-            return jsonify({'success': False, 'message': '请至少上传一个文件'}), 400
-        
-        # 读取数据
-        result = {
-            'success': True,
-            'message': '文件上传成功',
-            'school_path': school_path,
-            'league_path': league_path
-        }
-        
+        if not league_file or not league_file.filename:
+            return jsonify({'success': False, 'message': '请上传【联盟全体数据】文件'}), 400
+        league_filename = secure_filename(league_file.filename)
+        league_path = os.path.join(UPLOAD_FOLDER, f"league_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{league_filename}")
+        league_file.save(league_path)
+        result = {'success': True, 'message': '文件上传成功', 'league_path': league_path}
         try:
-            # 上传时只读取基本信息，不读取全部数据（避免重复读取）
-            if school_path:
-                # 只读取学科列表，不读取全部数据
-                # 优先使用 read_school_data 的逻辑（同时兼容"多学科标签页"和"单表CDE+学科列"两种格式）
-                subjects = []
-                try:
-                    school_data_preview = read_school_data(school_path)
-                    subjects = list(school_data_preview.keys())
-                    logger.info(f"上传验证：通过 read_school_data 检测到 {len(subjects)} 个学科: {subjects}")
-                except Exception as e:
-                    # 如果使用 read_school_data 失败，则退回到旧逻辑：按标签页名称推断学科
-                    logger.warning(f"通过 read_school_data 检测学科失败，改用标签页名称推断：{str(e)}")
-                    excel_file = pd.ExcelFile(school_path)
-                    sheet_names = excel_file.sheet_names
-                    # 旧逻辑：排除“总分”标签页，其余视为学科
-                    subjects = [name for name in sheet_names if name != '总分']
-                    logger.info(f"上传验证（标签页方式）：找到 {len(subjects)} 个学科: {subjects}")
-                
-                result['subjects'] = subjects
-                # 不读取全部数据，只返回学科列表
-                # 详细日志在上面的逻辑里已输出
-            
-            if league_path:
-                # 只读取基本信息，不读取全部数据
-                df = pd.read_excel(league_path, sheet_name='分数', nrows=0)  # 只读表头
-                result['league_columns'] = list(df.columns) if not df.empty else []
-            
+            df = pd.read_excel(league_path, sheet_name='分数', nrows=0)
+            raw_columns = list(df.columns) if not df.empty else []
+            result['league_columns'] = [str(c).strip() for c in raw_columns]
+            # 仅返回白名单学科（与 data_processor 一致，排除考号、7选3、联盟排名、门数等）
+            raw_str = [str(c).strip() for c in raw_columns]
+            result['subjects'] = [c for c in SUBJECT_COLUMNS if c in raw_str]
+            if not result['subjects']:
+                result['subjects'] = list(SUBJECT_COLUMNS)
+            logger.info(f"上传验证：联盟表头学科 {result['subjects']}")
             return jsonify(result)
         except Exception as e:
             logger.error(f"验证文件失败: {str(e)}", exc_info=True)
             return jsonify({'success': False, 'message': f'文件验证失败: {str(e)}'}), 500
-        
     except Exception as e:
         logger.error(f"上传文件失败: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'message': f'上传失败: {str(e)}'}), 500
@@ -161,11 +128,10 @@ def analyze():
         school_path = data.get('school_path')
         league_path = data.get('league_path')
         score_lines = data.get('score_lines', [])
-        school_name = data.get('school_name', '')
-        school_alias = data.get('school_alias', '')
+        school_names = _parse_school_names(data)
         
-        if not school_path and not league_path:
-            return jsonify({'success': False, 'message': '请先上传文件'}), 400
+        if not league_path:
+            return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
         
         if not score_lines:
             return jsonify({'success': False, 'message': '请输入至少一条分数线'}), 400
@@ -189,8 +155,7 @@ def analyze():
             school_data = _get_school_data_from_sources(
                 school_path=school_path,
                 league_path=league_path,
-                school_name=school_name,
-                school_alias=school_alias
+                school_names=school_names
             )
             
             logger.info(
@@ -215,9 +180,8 @@ def analyze():
             logger.warning(f"分析接口：获取我校数据失败：{str(ve)}")
         
         # 读取并分析联盟数据
-        if league_data is not None:
-            match_name = school_alias.strip() if school_alias.strip() else school_name.strip()
-            league_analysis = analyze_league_scores(league_data, match_name, score_lines, school_name)
+        if league_data is not None and school_names:
+            league_analysis = analyze_league_scores(league_data, school_names, score_lines, display_name=school_names[0])
         
         result = {
             'success': True,
@@ -235,6 +199,44 @@ def analyze():
         
     except Exception as e:
         logger.error(f"分析失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'分析失败: {str(e)}'}), 500
+
+
+@app.route('/analyze_league', methods=['POST'])
+def analyze_league():
+    """仅分析联盟数据，返回我校与各校对比（各校过线率、我校排名、我校各科排名、学科过线率排名等）"""
+    try:
+        data = request.get_json()
+        league_path = data.get('league_path')
+        school_names = _parse_school_names(data)
+        score_lines = data.get('score_lines', [])
+        subject_lines = data.get('subject_lines') or {}  # {"特控线": {"语文": 100}, "一段线": {"数学": 90}}
+        if not league_path:
+            return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
+        if not score_lines:
+            return jsonify({'success': False, 'message': '请输入至少一条分数线'}), 400
+        try:
+            score_lines = [float(x) for x in score_lines]
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': '分数线格式错误'}), 400
+        league_df = read_league_data(league_path)
+        league_analysis = analyze_league_scores(
+            league_df, school_names, score_lines,
+            display_name=school_names[0] if school_names else None
+        )
+        # 若设置了学科分数线，计算各校各学科过线率及我校排名
+        if subject_lines and school_names:
+            try:
+                subject_line_rankings = analyze_league_subject_lines(
+                    league_df, school_names, subject_lines
+                )
+                if subject_line_rankings:
+                    league_analysis['subject_line_rankings'] = subject_line_rankings
+            except Exception as e:
+                logger.warning(f"学科过线率排名计算失败: {e}", exc_info=True)
+        return jsonify({'success': True, 'league_analysis': league_analysis})
+    except Exception as e:
+        logger.error(f"联盟分析失败: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'message': f'分析失败: {str(e)}'}), 500
 
 
@@ -286,20 +288,17 @@ def analyze_school_subjects():
         data = request.get_json()
         school_path = data.get('school_path')
         league_path = data.get('league_path')
-        school_name = data.get('school_name', '')
-        school_alias = data.get('school_alias', '')
-        score_lines = data.get('score_lines', [])  # 保留参数以兼容，但不使用
+        school_names = _parse_school_names(data)
         
-        if not school_path and not league_path:
-            return jsonify({'success': False, 'message': '请先上传我校数据文件或联盟总成绩文件'}), 400
+        if not league_path:
+            return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
         
-        # 读取我校数据（允许来源于我校文件或联盟总成绩）
+        # 读取我校数据（从联盟总成绩中按学校名筛选）
         try:
             school_data = _get_school_data_from_sources(
                 school_path=school_path,
                 league_path=league_path,
-                school_name=school_name,
-                school_alias=school_alias
+                school_names=school_names
             )
         except ValueError as ve:
             logger.warning(f"分析我校各学科时获取我校数据失败: {str(ve)}")
@@ -330,29 +329,25 @@ def analyze_school_total():
         data = request.get_json()
         school_path = data.get('school_path')
         league_path = data.get('league_path')
-        school_name = data.get('school_name', '')
-        school_alias = data.get('school_alias', '')
+        school_names = _parse_school_names(data)
         score_lines = data.get('score_lines', [])
         
-        if not school_path and not league_path:
-            return jsonify({'success': False, 'message': '请先上传我校数据文件或联盟总成绩文件'}), 400
+        if not league_path:
+            return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
         
         if not score_lines:
             return jsonify({'success': False, 'message': '请输入至少一条分数线'}), 400
         
-        # 转换分数线为浮点数
         try:
             score_lines = [float(line) for line in score_lines]
-        except:
+        except Exception:
             return jsonify({'success': False, 'message': '分数线格式错误'}), 400
         
-        # 读取我校数据
         try:
             school_data = _get_school_data_from_sources(
                 school_path=school_path,
                 league_path=league_path,
-                school_name=school_name,
-                school_alias=school_alias
+                school_names=school_names
             )
         except ValueError as ve:
             logger.warning(f"分析我校总分时获取我校数据失败: {str(ve)}")
@@ -378,26 +373,32 @@ def analyze_school_total():
 
 @app.route('/class_detail', methods=['POST'])
 def get_class_detail():
-    """获取班级详细成绩"""
+    """获取班级详细成绩（支持从联盟文件按学校筛选）"""
     try:
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'message': '请求数据为空'}), 400
-            
+
         file_path = data.get('file_path')
+        league_path = data.get('league_path')
+        school_names = _parse_school_names(data)
         subject = data.get('subject')
         class_name = data.get('class_name')
-        
-        if not file_path or not subject or not class_name:
+
+        if not subject or not class_name:
             return jsonify({'success': False, 'message': '参数不完整'}), 400
-        
-        # 检查文件是否存在
-        if not os.path.exists(file_path):
-            logger.warning(f"文件不存在: {file_path}")
+        if not file_path and not league_path:
+            return jsonify({'success': False, 'message': '缺少文件路径'}), 400
+
+        if file_path and os.path.exists(file_path):
+            school_data = read_school_data(file_path)
+        elif league_path and os.path.exists(league_path):
+            if not school_names:
+                return jsonify({'success': False, 'message': '请提供学校名称或别名'}), 400
+            league_df = read_league_data(league_path)
+            school_data = build_school_data_from_league(league_df, school_names)
+        else:
             return jsonify({'success': False, 'message': '文件不存在'}), 404
-        
-        # 读取数据
-        school_data = read_school_data(file_path)
         
         if subject not in school_data:
             return jsonify({'success': False, 'message': f'未找到学科: {subject}'}), 400
@@ -460,24 +461,21 @@ def analyze_subject_lines():
         data = request.get_json()
         school_path = data.get('school_path')
         league_path = data.get('league_path')
-        school_name = data.get('school_name', '')
-        school_alias = data.get('school_alias', '')
+        school_names = _parse_school_names(data)
         total_score_line = data.get('total_score_line')
         subject_score_lines = data.get('subject_score_lines', {})
         
-        if not school_path and not league_path:
-            return jsonify({'success': False, 'message': '请先上传我校数据文件或联盟总成绩文件'}), 400
+        if not league_path:
+            return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
         
         if not total_score_line:
             return jsonify({'success': False, 'message': '请输入总分分数线'}), 400
         
-        # 读取数据
         try:
             school_data = _get_school_data_from_sources(
                 school_path=school_path,
                 league_path=league_path,
-                school_name=school_name,
-                school_alias=school_alias
+                school_names=school_names
             )
         except ValueError as ve:
             logger.warning(f"分析学科分数线时获取我校数据失败: {str(ve)}")
@@ -500,24 +498,21 @@ def analyze_class_subjects():
         data = request.get_json()
         school_path = data.get('school_path')
         league_path = data.get('league_path')
-        school_name = data.get('school_name', '')
-        school_alias = data.get('school_alias', '')
+        school_names = _parse_school_names(data)
         score_line = data.get('score_line')
         subject_score_lines = data.get('subject_score_lines', {})
         
-        if not school_path and not league_path:
-            return jsonify({'success': False, 'message': '请先上传我校数据文件或联盟总成绩文件'}), 400
+        if not league_path:
+            return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
         
         if not score_line:
             return jsonify({'success': False, 'message': '请输入分数线'}), 400
         
-        # 读取数据
         try:
             school_data = _get_school_data_from_sources(
                 school_path=school_path,
                 league_path=league_path,
-                school_name=school_name,
-                school_alias=school_alias
+                school_names=school_names
             )
         except ValueError as ve:
             logger.warning(f"分析班级各科情况时获取我校数据失败: {str(ve)}")
@@ -540,24 +535,21 @@ def calculate_class_assessment_endpoint():
         data = request.get_json()
         school_path = data.get('school_path')
         league_path = data.get('league_path')
-        school_name = data.get('school_name', '')
-        school_alias = data.get('school_alias', '')
+        school_names = _parse_school_names(data)
         tekong_line = data.get('tekong_line')
         yiduan_line = data.get('yiduan_line')
         
-        if not school_path and not league_path:
-            return jsonify({'success': False, 'message': '请先上传我校数据文件或联盟总成绩文件'}), 400
+        if not league_path:
+            return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
         
         if not tekong_line or not yiduan_line:
             return jsonify({'success': False, 'message': '请输入特控线和一段线'}), 400
         
-        # 读取数据
         try:
             school_data = _get_school_data_from_sources(
                 school_path=school_path,
                 league_path=league_path,
-                school_name=school_name,
-                school_alias=school_alias
+                school_names=school_names
             )
         except ValueError as ve:
             logger.warning(f"计算班级考核分时获取我校数据失败: {str(ve)}")
@@ -623,9 +615,9 @@ def export_excel():
             # 2. 班级各科情况（特控线）
             if 'class_subjects_tekong' in export_data:
                 class_subjects = export_data['class_subjects_tekong']
-                # 构建表格数据
+                # 构建表格数据（学科按语数英物化生政史地顺序）
                 all_classes = sorted(class_subjects.get('classes', {}).keys())
-                all_subjects = list(class_subjects.get('subject_lines', {}).keys())
+                all_subjects = sort_subjects(class_subjects.get('subject_lines', {}).keys())
                 
                 # 创建同时包含过线人数和过线率的表
                 passed_data = []
@@ -703,9 +695,9 @@ def export_excel():
             # 3. 班级各科情况（一段线）
             if 'class_subjects_yiduan' in export_data:
                 class_subjects = export_data['class_subjects_yiduan']
-                # 构建表格数据
+                # 构建表格数据（学科按语数英物化生政史地顺序）
                 all_classes = sorted(class_subjects.get('classes', {}).keys())
-                all_subjects = list(class_subjects.get('subject_lines', {}).keys())
+                all_subjects = sort_subjects(class_subjects.get('subject_lines', {}).keys())
                 
                 # 创建同时包含过线人数和过线率的表
                 passed_data = []
@@ -780,34 +772,53 @@ def export_excel():
                 
                 sheet_idx += 1
             
-            # 4. 学科分数线详情
+            # 4. 学科分数线详情（每个学科一个工作表，并附带班级过线率柱状图）
+            def _write_subject_line_sheet_and_chart(writer, line_name, subject, subject_data):
+                df_subject = pd.DataFrame(subject_data.get('class_stats', []))
+                if df_subject.empty:
+                    return
+                df_subject = df_subject.rename(columns={
+                    'class_name': '班级',
+                    'total_students': '总人数',
+                    'passed_count': '过线人数',
+                    'pass_rate': '过线率(%)',
+                    'average_score': '平均分'
+                })
+                sheet_name = f'{line_name}-{subject}'[:31]  # Excel 工作表名最多31字符
+                df_subject.to_excel(writer, sheet_name=sheet_name, index=False)
+                try:
+                    from openpyxl.chart import BarChart, Reference
+                    workbook = writer.book
+                    if sheet_name not in workbook.sheetnames:
+                        return
+                    worksheet = workbook[sheet_name]
+                    n = len(df_subject)
+                    data_start_row, data_end_row = 2, n + 1
+                    cats = Reference(worksheet, min_col=1, min_row=data_start_row, max_row=data_end_row)
+                    vals = Reference(worksheet, min_col=4, min_row=1, max_row=data_end_row)  # 过线率(%)
+                    chart = BarChart()
+                    chart.type = "col"
+                    chart.style = 10
+                    chart.title = f"{line_name}-{subject} 各班过线率"
+                    chart.y_axis.title = '过线率(%)'
+                    chart.x_axis.title = '班级'
+                    chart.add_data(vals, titles_from_data=True)
+                    chart.set_categories(cats)
+                    chart.width = 12
+                    chart.height = 8
+                    worksheet.add_chart(chart, "A" + str(data_end_row + 3))
+                except Exception as e:
+                    logger.warning(f"学科线工作表图表 {sheet_name} 创建失败: {str(e)}")
+
             if 'subject_lines_tekong' in export_data:
                 subject_lines = export_data['subject_lines_tekong']
                 for subject, subject_data in subject_lines.get('subjects', {}).items():
-                    df_subject = pd.DataFrame(subject_data.get('class_stats', []))
-                    if not df_subject.empty:
-                        df_subject = df_subject.rename(columns={
-                            'class_name': '班级',
-                            'total_students': '总人数',
-                            'passed_count': '过线人数',
-                            'pass_rate': '过线率(%)',
-                            'average_score': '平均分'
-                        })
-                        df_subject.to_excel(writer, sheet_name=f'特控线-{subject}', index=False)
-            
+                    _write_subject_line_sheet_and_chart(writer, '特控线', subject, subject_data)
+
             if 'subject_lines_yiduan' in export_data:
                 subject_lines = export_data['subject_lines_yiduan']
                 for subject, subject_data in subject_lines.get('subjects', {}).items():
-                    df_subject = pd.DataFrame(subject_data.get('class_stats', []))
-                    if not df_subject.empty:
-                        df_subject = df_subject.rename(columns={
-                            'class_name': '班级',
-                            'total_students': '总人数',
-                            'passed_count': '过线人数',
-                            'pass_rate': '过线率(%)',
-                            'average_score': '平均分'
-                        })
-                        df_subject.to_excel(writer, sheet_name=f'一段线-{subject}', index=False)
+                    _write_subject_line_sheet_and_chart(writer, '一段线', subject, subject_data)
         
         output.seek(0)
         

@@ -117,13 +117,34 @@
             flex-wrap: wrap;
             gap: 5px;
         }
+        /* 结果区域：醒目区块标题，便于识别当前所在区域 */
+        .result-section-card {
+            border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .result-section-header {
+            padding: 14px 20px;
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            border-left: 4px solid transparent;
+        }
+        .result-section-header-league { background: linear-gradient(135deg, #0dcaf0 0%, #0aa2c0 100%); color: #fff; border-left-color: #087990; }
+        .result-section-header-primary { background: linear-gradient(135deg, #1a73e8 0%, #1557b0 100%); color: #fff; border-left-color: #0d47a1; }
+        .result-section-header-success { background: linear-gradient(135deg, #198754 0%, #146c43 100%); color: #fff; border-left-color: #0f5132; }
+        .result-section-header-info { background: linear-gradient(135deg, #0d6efd 0%, #0a58ca 100%); color: #fff; border-left-color: #084298; }
+        .result-section-header-warning { background: linear-gradient(135deg, #ffc107 0%, #e0a800 100%); color: #1a1a1a; border-left-color: #b38600; }
+        .result-section-header-secondary { background: linear-gradient(135deg, #6c757d 0%, #495057 100%); color: #fff; border-left-color: #343a40; }
+        .result-section-header-danger { background: linear-gradient(135deg, #dc3545 0%, #b02a37 100%); color: #fff; border-left-color: #842029; }
+        #resultsArea .card:first-of-type { margin-top: 0; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1 class="mb-4">成绩分析系统</h1>
         
-        <!-- 文件上传区域 -->
+        <!-- 文件上传区域（仅联盟全体数据） -->
         <div class="card">
             <div class="card-header">
                 <h5 class="mb-0">1. 上传数据文件</h5>
@@ -132,25 +153,24 @@
                 <form id="uploadForm">
                     <div class="row">
                         <div class="col-md-6">
-                            <label for="school_file" class="form-label">【联盟我校数据】文件</label>
-                            <input type="file" class="form-control" id="school_file" name="school_file" accept=".xlsx,.xls">
-                            <small class="form-text text-muted">请上传包含各学科成绩的Excel文件</small>
-                        </div>
-                        <div class="col-md-6">
                             <label for="league_file" class="form-label">【联盟全体数据】文件</label>
-                            <input type="file" class="form-control" id="league_file" name="league_file" accept=".xlsx,.xls">
-                            <small class="form-text text-muted">请上传包含联盟全体成绩的Excel文件</small>
-                        </div>
-                    </div>
-                    <div class="row mt-3">
-                        <div class="col-md-6">
-                            <label for="school_name" class="form-label">我校名称（用于筛选）</label>
-                            <input type="text" class="form-control" id="school_name" value="温州科技高级中学" placeholder="请输入我校在数据中的名称">
+                            <input type="file" class="form-control" id="league_file" name="league_file" accept=".xlsx,.xls" required>
+                            <small class="form-text text-muted">请上传包含联盟全体成绩的Excel文件（需含“分数”工作表）</small>
                         </div>
                         <div class="col-md-6">
-                            <label for="school_alias" class="form-label">学校别名（可选，用于匹配）</label>
-                            <input type="text" class="form-control" id="school_alias" value="温州科技" placeholder="如果数据中的名称不同，请输入别名">
-                            <small class="form-text text-muted">例如：数据中显示"温州科技"，但实际是"温州科技高级中学"</small>
+                            <label class="form-label">学校名称/别名（用于筛选，可填多个，任一匹配即视为我校）</label>
+                            <div id="schoolNamesList" class="mb-2">
+                                <div class="input-group input-group-sm mb-2 school-name-row">
+                                    <input type="text" class="form-control school-name-input" placeholder="如：温州科技高级中学" value="温州科技高级中学">
+                                    <button type="button" class="btn btn-outline-secondary btn-remove-school" title="删除该行" aria-label="删除">×</button>
+                                </div>
+                                <div class="input-group input-group-sm mb-2 school-name-row">
+                                    <input type="text" class="form-control school-name-input" placeholder="如：温州科技（别名）" value="温州科技">
+                                    <button type="button" class="btn btn-outline-secondary btn-remove-school" title="删除该行" aria-label="删除">×</button>
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="addSchoolNameBtn">+ 添加一行</button>
+                            <small class="form-text text-muted d-block mt-1">与Excel中“学校”列完全一致即可，可填全称、简称等</small>
                         </div>
                     </div>
                     <button type="submit" class="btn btn-primary mt-3">上传文件</button>
@@ -211,38 +231,8 @@
             </div>
         </div>
         
-        <!-- 分析结果区域 -->
-        <div id="resultsArea" style="display: none;">
-            <!-- 我校各学科班级对比分析 -->
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">我校各学科班级对比分析</h5>
-                </div>
-                <div class="card-body">
-                    <div id="schoolSubjectsAnalysisResults"></div>
-                </div>
-            </div>
-            
-            <!-- 我校总分分析 -->
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">我校成绩总分分析（特控线率统计）</h5>
-                </div>
-                <div class="card-body">
-                    <div id="schoolTotalAnalysisResults"></div>
-                </div>
-            </div>
-            
-            <!-- 联盟数据分析 -->
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">需求2：联盟全体数据分析</h5>
-                </div>
-                <div class="card-body">
-                    <div id="leagueAnalysisResults"></div>
-                </div>
-            </div>
-        </div>
+        <!-- 分析结果区域（由 displayNewResults 动态填充：班级考核、班级各科情况、学科分数线、总分分析等） -->
+        <div id="resultsArea" style="display: none;"></div>
     </div>
     
     <!-- 班级详细成绩模态框 -->
@@ -285,8 +275,46 @@
         let uploadedFiles = {};
         let subjectLines = {}; // 存储学科分数线 {lineName: {subject: score}}
         let availableSubjects = []; // 可用的学科列表（从文件读取）
-        let presetSubjects = ['语文', '数学', '英语', '物理', '化学', '生物', '政治', '历史', '地理', '技术']; // 预设学科列表
+        let presetSubjects = ['语文', '数学', '英语', '日语', '物理', '化学', '生物', '政治', '历史', '地理', '技术']; // 与后端 SUBJECT_COLUMNS 一致
+        const SUBJECT_ORDER = ['语文', '数学', '英语', '日语', '物理', '化学', '生物', '政治', '历史', '地理', '技术'];
+        function sortSubjects(keys) {
+            return [...keys].sort((a, b) => {
+                const ia = SUBJECT_ORDER.indexOf(a);
+                const ib = SUBJECT_ORDER.indexOf(b);
+                if (ia !== -1 && ib !== -1) return ia - ib;
+                if (ia !== -1) return -1;
+                if (ib !== -1) return 1;
+                return String(a).localeCompare(b);
+            });
+        }
         let analysisResults = {}; // 存储分析结果，用于导出
+        
+        // 学校名称/别名：收集所有非空输入
+        function getSchoolNames() {
+            const inputs = document.querySelectorAll('.school-name-input');
+            const names = [];
+            inputs.forEach(input => {
+                const v = (input.value || '').trim();
+                if (v) names.push(v);
+            });
+            return names;
+        }
+        
+        // 添加一行学校名称
+        document.getElementById('addSchoolNameBtn').addEventListener('click', function() {
+            const list = document.getElementById('schoolNamesList');
+            const row = document.createElement('div');
+            row.className = 'input-group input-group-sm mb-2 school-name-row';
+            row.innerHTML = '<input type="text" class="form-control school-name-input" placeholder="学校名称或别名">' +
+                '<button type="button" class="btn btn-outline-secondary btn-remove-school" title="删除该行" aria-label="删除">×</button>';
+            list.appendChild(row);
+        });
+        document.getElementById('schoolNamesList').addEventListener('click', function(e) {
+            if (e.target.classList.contains('btn-remove-school')) {
+                const rows = document.querySelectorAll('.school-name-row');
+                if (rows.length > 1) e.target.closest('.school-name-row').remove();
+            }
+        });
             
             // 初始化检查
             console.log('页面初始化完成');
@@ -336,11 +364,11 @@
         // 生成学科分数线输入框
         function generateSubjectLinesInputs() {
             const container = document.getElementById('subjectLinesInputs');
-            // 合并预设学科和从文件读取的学科，去重
+            // 合并预设学科和从文件读取的学科，去重，按语数英物化生政史地顺序
             let allSubjects = [...new Set([...presetSubjects, ...availableSubjects])];
             // 过滤掉自动生成的"Unnamed:"列
             allSubjects = allSubjects.filter(name => name && !name.startsWith('Unnamed:'));
-            allSubjects = allSubjects.sort();
+            allSubjects = sortSubjects(allSubjects);
             
             let html = '<div class="row g-2">';
             allSubjects.forEach(subject => {
@@ -462,26 +490,18 @@
         updateSubjectLinesDisplay();
         
         
-        // 文件上传
+        // 文件上传（仅联盟全体数据）
         document.getElementById('uploadForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             
-            const schoolFile = document.getElementById('school_file').files[0];
             const leagueFile = document.getElementById('league_file').files[0];
-            
-            // 允许只上传一个文件
-            if (!schoolFile && !leagueFile) {
-                alert('请至少上传一个文件');
+            if (!leagueFile) {
+                alert('请选择【联盟全体数据】文件');
                 return;
             }
             
             const formData = new FormData();
-            if (schoolFile) {
-                formData.append('school_file', schoolFile);
-            }
-            if (leagueFile) {
-                formData.append('league_file', leagueFile);
-            }
+            formData.append('league_file', leagueFile);
             
             const statusDiv = document.getElementById('uploadStatus');
             statusDiv.innerHTML = '<div class="alert alert-info">正在上传文件...</div>';
@@ -512,18 +532,21 @@
                 if (result.success) {
                     statusDiv.innerHTML = '<div class="alert alert-success">文件上传成功！</div>';
                     uploadedFiles = {
-                        school_path: result.school_path || null,
+                        school_path: null,
                         league_path: result.league_path || null
                     };
                     console.log('保存的文件路径:', uploadedFiles);
                     
-                    // 获取学科列表
+                    // 学科列表来自联盟表头（语文、数学等）
                     if (result.subjects && result.subjects.length > 0) {
                         availableSubjects = result.subjects;
-                        console.log('可用学科列表:', availableSubjects);
-                        // 重新生成学科输入框
-                        generateSubjectLinesInputs();
+                    } else if (result.league_columns && result.league_columns.length > 0) {
+                        const subjectCols = ['语文', '数学', '英语', '物理', '化学', '生物', '政治', '历史', '地理'];
+                        availableSubjects = result.league_columns.filter(c => subjectCols.includes(String(c).trim()));
+                        if (availableSubjects.length === 0) availableSubjects = [...subjectCols];
                     }
+                    console.log('可用学科列表:', availableSubjects);
+                    generateSubjectLinesInputs();
                     
                     // 显示分数线设置区域
                     const scoreLineCard = document.getElementById('scoreLineCard');
@@ -559,16 +582,14 @@
                 return;
             }
             
-            const schoolName = document.getElementById('school_name').value.trim();
-            const schoolAlias = document.getElementById('school_alias').value.trim();
-            if (!schoolName) {
-                alert('请输入我校名称');
+            const schoolNames = getSchoolNames();
+            if (!schoolNames.length) {
+                alert('请至少填写一个学校名称或别名');
                 return;
             }
             
-            // 允许两种来源：1) 单独的我校文件；2) 只上传联盟总成绩文件
-            if (!uploadedFiles.school_path && !uploadedFiles.league_path) {
-                alert('请先上传我校数据文件或联盟总成绩文件');
+            if (!uploadedFiles.league_path) {
+                alert('请先上传【联盟全体数据】文件');
                 return;
             }
             
@@ -591,8 +612,7 @@
                         body: JSON.stringify({
                             school_path: uploadedFiles.school_path,
                             league_path: uploadedFiles.league_path,
-                            school_name: schoolName,
-                            school_alias: schoolAlias,
+                            school_names: schoolNames,
                             score_lines: scoreLines
                         })
                     });
@@ -616,8 +636,7 @@
                             body: JSON.stringify({
                                 school_path: uploadedFiles.school_path,
                                 league_path: uploadedFiles.league_path,
-                                school_name: schoolName,
-                                school_alias: schoolAlias,
+                                school_names: schoolNames,
                                 total_score_line: tekongLine,
                                 subject_score_lines: subjectLines['特控线']
                             })
@@ -640,8 +659,7 @@
                             body: JSON.stringify({
                                 school_path: uploadedFiles.school_path,
                                 league_path: uploadedFiles.league_path,
-                                school_name: schoolName,
-                                school_alias: schoolAlias,
+                                school_names: schoolNames,
                                 total_score_line: yiduanLine,
                                 subject_score_lines: subjectLines['一段线']
                             })
@@ -666,8 +684,7 @@
                         body: JSON.stringify({
                             school_path: uploadedFiles.school_path,
                             league_path: uploadedFiles.league_path,
-                            school_name: schoolName,
-                            school_alias: schoolAlias,
+                            school_names: schoolNames,
                             score_line: tekongLine,
                             subject_score_lines: subjectLines['特控线'] || {}
                         })
@@ -688,8 +705,7 @@
                         body: JSON.stringify({
                             school_path: uploadedFiles.school_path,
                             league_path: uploadedFiles.league_path,
-                            school_name: schoolName,
-                            school_alias: schoolAlias,
+                            school_names: schoolNames,
                             score_line: yiduanLine,
                             subject_score_lines: subjectLines['一段线'] || {}
                         })
@@ -713,8 +729,7 @@
                         body: JSON.stringify({
                             school_path: uploadedFiles.school_path,
                             league_path: uploadedFiles.league_path,
-                            school_name: schoolName,
-                            school_alias: schoolAlias,
+                            school_names: schoolNames,
                             tekong_line: tekongLine,
                             yiduan_line: yiduanLine
                         })
@@ -730,10 +745,32 @@
                     console.error('班级考核分计算失败:', error);
                 }
                 
+                // 5. 联盟对比（我校与各校过线率、我校排名、我校各科排名、学科过线率排名）
+                let leagueAnalysis = null;
+                try {
+                    const leagueRes = await fetch('/analyze_league', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            league_path: uploadedFiles.league_path,
+                            school_names: schoolNames,
+                            score_lines: [tekongLine, yiduanLine],
+                            subject_lines: subjectLines && Object.keys(subjectLines).length > 0 ? subjectLines : undefined
+                        })
+                    });
+                    const leagueData = await leagueRes.json();
+                    if (leagueData.success && leagueData.league_analysis) {
+                        leagueAnalysis = leagueData.league_analysis;
+                        analysisResults.leagueAnalysis = leagueAnalysis;
+                    }
+                } catch (error) {
+                    console.error('联盟对比分析失败:', error);
+                }
+                
                 // 显示结果
                 displayNewResults(schoolTotalAnalysis, subjectLinesTekong, subjectLinesYiduan, 
                                  classSubjectsTekong, classSubjectsYiduan, classAssessment,
-                                 excludedStudents, tekongLine, yiduanLine);
+                                 excludedStudents, tekongLine, yiduanLine, leagueAnalysis);
                 
                 // 显示导出按钮
                 document.getElementById('exportBtn').style.display = 'inline-block';
@@ -896,8 +933,10 @@
             }
         }
         
-        // 显示分析结果
+        // 以下为旧版展示逻辑：依赖 schoolSubjectsAnalysisResults / schoolTotalAnalysisResults / leagueAnalysisResults 等容器。
+        // 当前「开始分析」仅使用 displayNewResults，此处保留供日后需要展示联盟排名、我校各科班级对比时复用（可调用 /analyze 获取数据后传入）。
         function displayResults(schoolAnalysis, leagueAnalysis, scoreLinesList, schoolTotalAnalysis = null, schoolSubjectsAnalysis = null) {
+            if (!document.getElementById('schoolSubjectsAnalysisResults')) return; // 当前页面未使用该展示容器，直接返回
             // 创建分数到名称的映射
             const scoreToName = {};
             scoreLinesList.forEach(line => {
@@ -909,11 +948,12 @@
             let schoolSubjectsHTML = '';
             
             if (!schoolSubjectsAnalysis || Object.keys(schoolSubjectsAnalysis).length === 0) {
-                schoolSubjectsHTML = '<div class="alert alert-warning">没有找到我校数据，请先上传【联盟我校数据】文件</div>';
+                schoolSubjectsHTML = '<div class="alert alert-warning">没有找到我校数据，请检查【联盟全体数据】中学校名称是否与所填一致</div>';
             } else {
-                // 使用索引生成唯一ID
+                // 按语数英物化生政史地顺序显示学科
                 let subjectIndex = 0;
-                for (const [subject, data] of Object.entries(schoolSubjectsAnalysis)) {
+                for (const subject of sortSubjects(Object.keys(schoolSubjectsAnalysis))) {
+                    const data = schoolSubjectsAnalysis[subject];
                     // 生成唯一的图表ID：使用索引 + 学科名称的简单编码
                     const chartId = `subject_chart_${subjectIndex}_${encodeURIComponent(subject).replace(/[^a-zA-Z0-9]/g, '_')}`;
                     subjectIndex++;
@@ -990,11 +1030,12 @@
             
             schoolSubjectsDiv.innerHTML = schoolSubjectsHTML;
             
-            // 创建各学科班级对比图表（在HTML渲染后）
+            // 创建各学科班级对比图表（在HTML渲染后，按语数英物化生政史地顺序）
             if (schoolSubjectsAnalysis && Object.keys(schoolSubjectsAnalysis).length > 0) {
                 setTimeout(() => {
                     let subjectIndex = 0;
-                    for (const [subject, data] of Object.entries(schoolSubjectsAnalysis)) {
+                    for (const subject of sortSubjects(Object.keys(schoolSubjectsAnalysis))) {
+                        const data = schoolSubjectsAnalysis[subject];
                         if (data.class_stats && data.class_stats.length > 0) {
                             // 使用相同的ID生成逻辑
                             const chartId = `subject_chart_${subjectIndex}_${encodeURIComponent(subject).replace(/[^a-zA-Z0-9]/g, '_')}`;
@@ -1167,7 +1208,23 @@
                                 </div>
                             </div>
                             
-                            ${data.school_rank ? `<div class="alert alert-info">我校在联盟中排名: 第 ${data.school_rank} 名</div>` : ''}
+                            ${data.school_rank ? `<div class="alert alert-info"><strong>我校的线在各校的排名：</strong>第 ${data.school_rank} 名</div>` : ''}
+                            
+                            ${data.school_subject_ranks && Object.keys(data.school_subject_ranks).length > 0 ? `
+                            <h6>我校各学科在各校之间的排名</h6>
+                            <div class="table-responsive mb-3">
+                                <table class="table table-striped table-sm">
+                                    <thead><tr><th>学科</th><th>我校排名</th><th>我校平均分</th></tr></thead>
+                                    <tbody>
+                                        ${sortSubjects(Object.keys(data.school_subject_ranks)).map(subj => {
+                                            const rank = data.school_subject_ranks[subj];
+                                            const avg = (data.school_subject_averages && data.school_subject_averages[subj] != null) ? data.school_subject_averages[subj] : '-';
+                                            return `<tr><td>${subj}</td><td><strong>第 ${rank} 名</strong></td><td>${avg}</td></tr>`;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                            ` : ''}
                             
                             <h6>我校过线学生班级分布</h6>
                             <div class="mb-3">
@@ -1811,7 +1868,7 @@
         // 显示新的分析结果
         function displayNewResults(schoolTotalAnalysis, subjectLinesTekong, subjectLinesYiduan,
                                  classSubjectsTekong, classSubjectsYiduan, classAssessment,
-                                 excludedStudents, tekongLine, yiduanLine) {
+                                 excludedStudents, tekongLine, yiduanLine, leagueAnalysis) {
             const resultsArea = document.getElementById('resultsArea');
             let html = '';
             
@@ -1819,9 +1876,9 @@
             if (classAssessment && classAssessment.length > 0) {
                 const assessmentChartId = `class_assessment_chart_${Date.now()}`;
                 html += `
-                    <div class="card mb-3">
-                        <div class="card-header bg-primary text-white">
-                            <h5 class="mb-0">班级考核结果</h5>
+                    <div class="card mb-3 result-section-card">
+                        <div class="card-header result-section-header result-section-header-primary">
+                            <h5 class="mb-0">一、班级考核结果</h5>
                         </div>
                         <div class="card-body">
                             <div class="table-responsive">
@@ -1868,8 +1925,8 @@
             // 1.1 缺考或被剔除学生列表
             if (excludedStudents && excludedStudents.length > 0) {
                 html += `
-                    <div class="card mb-3">
-                        <div class="card-header bg-warning text-dark">
+                    <div class="card mb-3 result-section-card">
+                        <div class="card-header result-section-header result-section-header-warning">
                             <h5 class="mb-0">未纳入班级考核的学生（缺考或成绩异常）</h5>
                         </div>
                         <div class="card-body">
@@ -1923,13 +1980,126 @@
                 html += createTotalScoreAnalysis(schoolTotalAnalysis, tekongLine, yiduanLine);
             }
             
+            // 7. 我校与各校对比（联盟过线率、我校排名、我校各科排名）
+            if (leagueAnalysis && Object.keys(leagueAnalysis).length > 0) {
+                html += createLeagueComparisonSection(leagueAnalysis, tekongLine, yiduanLine);
+            }
+            
             resultsArea.innerHTML = html;
         }
         
-        // 创建班级各科情况表格和图表
+        // 我校与各校对比区块（联盟数据）
+        function createLeagueComparisonSection(leagueAnalysis, tekongLine, yiduanLine) {
+            const scoreToName = {};
+            if (tekongLine) scoreToName[tekongLine] = '特控线';
+            if (yiduanLine) scoreToName[yiduanLine] = '一段线';
+            const subjectLineRankings = leagueAnalysis.subject_line_rankings || {};
+            // 过滤掉 line_xxx 键，只遍历分数线结果
+            const lineKeys = Object.keys(leagueAnalysis).filter(k => k.startsWith('line_'));
+            let html = `
+                <div class="card mb-3 result-section-card">
+                    <div class="card-header result-section-header result-section-header-league">
+                        <h5 class="mb-0">五、我校与各校对比</h5>
+                    </div>
+                    <div class="card-body">
+            `;
+            for (const key of lineKeys) {
+                const data = leagueAnalysis[key];
+                if (!data || data.score_line == null) continue;
+                const lineName = scoreToName[data.score_line] || `分数线${data.score_line}分`;
+                html += `
+                    <div class="mb-4">
+                        <h6 class="text-primary">${lineName} (${data.score_line}分)</h6>
+                        <div class="row mb-3">
+                            <div class="col-md-3">
+                                <div class="stat-card">
+                                    <h3>${data.league_passed_count}/${data.league_total}</h3>
+                                    <p>联盟过线/总人数</p>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card">
+                                    <h3>${data.school_passed_count}/${data.school_total}</h3>
+                                    <p>我校过线/总人数</p>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card">
+                                    <h3>${data.school_pass_rate}%</h3>
+                                    <p>我校过线率</p>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card">
+                                    <h3>${data.school_rank != null ? '第' + data.school_rank + '名' : '-'}</h3>
+                                    <p>我校在各校中排名</p>
+                                </div>
+                            </div>
+                        </div>
+                        ${data.school_rank != null ? `<p class="alert alert-info mb-2"><strong>我校的线在各校的排名：</strong>第 ${data.school_rank} 名</p>` : ''}
+                        ${data.school_subject_ranks && Object.keys(data.school_subject_ranks).length > 0 ? `
+                        <h6>我校各学科在各校中的排名（按平均分）</h6>
+                        <div class="table-responsive mb-3">
+                            <table class="table table-striped table-sm">
+                                <thead><tr><th>学科</th><th>我校排名</th><th>我校平均分</th></tr></thead>
+                                <tbody>
+                                    ${sortSubjects(Object.keys(data.school_subject_ranks)).map(subj => {
+                                        const rank = data.school_subject_ranks[subj];
+                                        const avg = (data.school_subject_averages && data.school_subject_averages[subj] != null) ? data.school_subject_averages[subj] : '-';
+                                        return '<tr><td>' + subj + '</td><td><strong>第 ' + rank + ' 名</strong></td><td>' + avg + '</td></tr>';
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        ` : ''}
+                        <h6>各校过线率排名（前10）</h6>
+                        <div class="table-responsive mb-3">
+                            <table class="table table-striped table-sm">
+                                <thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th><th>平均分</th></tr></thead>
+                                <tbody>
+                                    ${(data.school_stats || []).slice(0, 10).map((s, i) => '<tr><td>' + (i+1) + '</td><td>' + s.school_name + '</td><td>' + s.total_students + '</td><td>' + s.passed_count + '</td><td><strong>' + s.pass_rate + '%</strong></td><td>' + s.average_score + '</td></tr>').join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            }
+            // 学科过线率排名（各校）：仅当用户设置了学科线时展示
+            if (Object.keys(subjectLineRankings).length > 0) {
+                html += '<hr class="my-4"><h5 class="mb-3">各学科过线率排名（各校）</h5>';
+                for (const [lineName, subjects] of Object.entries(subjectLineRankings)) {
+                    if (!subjects || Object.keys(subjects).length === 0) continue;
+                    const lineColor = lineName === '特控线' ? 'danger' : 'success';
+                    html += `<div class="mb-4"><h6 class="text-${lineColor}">${lineName}</h6>`;
+                    for (const [subject, info] of Object.entries(subjects)) {
+                        if (!info || info.school_stats == null) continue;
+                        html += `
+                        <div class="mb-3">
+                            <p class="mb-1"><strong>${subject}</strong>（学科线 ${info.score_line} 分）
+                                ${info.my_school_rank != null ? ` · 我校排名：<strong>第 ${info.my_school_rank} 名</strong>` : ''}
+                                ${info.my_pass_rate != null ? ` · 我校过线率：<strong>${info.my_pass_rate}%</strong>（${info.my_passed_count || 0}/${info.my_total || 0}）` : ''}
+                            </p>
+                            <div class="table-responsive">
+                                <table class="table table-striped table-sm table-bordered">
+                                    <thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th></tr></thead>
+                                    <tbody>
+                                        ${(info.school_stats || []).slice(0, 10).map((s, i) => '<tr><td>' + (i+1) + '</td><td>' + s.school_name + '</td><td>' + s.total_students + '</td><td>' + s.passed_count + '</td><td><strong>' + s.pass_rate + '%</strong></td></tr>').join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>`;
+                    }
+                    html += '</div>';
+                }
+            }
+            html += '</div></div>';
+            return html;
+        }
+        
+        // 创建班级各科情况表格和图表（学科按语数英物化生政史地顺序）
         function createClassSubjectsTable(data, lineName, scoreLine) {
-            const allClasses = Object.keys(data.classes).sort();
-            const allSubjects = Object.keys(data.subject_lines || {}).sort();
+            const allClasses = Object.keys(data.classes).sort((a, b) => (isNaN(Number(a)) || isNaN(Number(b))) ? String(a).localeCompare(b) : Number(a) - Number(b));
+            const allSubjects = sortSubjects(Object.keys(data.subject_lines || {}));
             
             if (allClasses.length === 0 || allSubjects.length === 0) {
                 return '';
@@ -1940,9 +2110,9 @@
             
             // 表格（过线人数和过线率合并在一张表）
             let tableHtml = `
-                <div class="card mb-3">
-                    <div class="card-header bg-info text-white">
-                        <h5 class="mb-0">${lineName} - 班级各科过线情况</h5>
+                <div class="card mb-3 result-section-card">
+                    <div class="card-header result-section-header result-section-header-info">
+                        <h5 class="mb-0">二、${lineName} - 班级各科过线情况</h5>
                     </div>
                     <div class="card-body">
                         <div class="table-responsive">
@@ -2075,18 +2245,19 @@
             setTimeout(() => chart.resize(), 50);
         }
         
-        // 创建学科分数线详情
+        // 创建学科分数线详情（学科按语数英物化生政史地顺序）
         function createSubjectLinesDetails(data, lineName) {
             const chartId = `subject_lines_chart_${lineName}_${Date.now()}`;
             let html = `
-                <div class="card mb-3">
-                    <div class="card-header bg-warning text-dark">
-                        <h5 class="mb-0">${lineName} - 各学科分数线详情</h5>
+                <div class="card mb-3 result-section-card">
+                    <div class="card-header result-section-header result-section-header-warning">
+                        <h5 class="mb-0">三、${lineName} - 各学科分数线详情</h5>
                     </div>
                     <div class="card-body">
             `;
             
-            for (const [subject, subjectData] of Object.entries(data.subjects)) {
+            for (const subject of sortSubjects(Object.keys(data.subjects || {}))) {
+                const subjectData = data.subjects[subject];
                 const subjectChartId = `subject_line_chart_${lineName}_${subject}_${Date.now()}`;
                 html += `
                     <div class="mb-4">
@@ -2134,9 +2305,9 @@
         // 创建总分分析
         function createTotalScoreAnalysis(data, tekongLine, yiduanLine) {
             let html = `
-                <div class="card mb-3">
-                    <div class="card-header bg-secondary text-white">
-                        <h5 class="mb-0">总分分析</h5>
+                <div class="card mb-3 result-section-card">
+                    <div class="card-header result-section-header result-section-header-secondary">
+                        <h5 class="mb-0">四、总分分析</h5>
                     </div>
                     <div class="card-body">
             `;
@@ -2260,7 +2431,9 @@
                     {
                         type: 'value',
                         name: '考核分',
-                        position: 'left'
+                        position: 'left',
+                        min: 0,
+                        max: 1
                     },
                     {
                         type: 'value',
@@ -2276,17 +2449,20 @@
                         data: assessmentScores,
                         itemStyle: {
                             color: function(params) {
-                                const score = params.value;
-                                if (score >= 80) return '#ff6b6b';
-                                if (score >= 60) return '#4ecdc4';
-                                if (score >= 40) return '#95e1d3';
+                                const score = Number(params.value);
+                                if (score >= 0.8) return '#ff6b6b';
+                                if (score >= 0.6) return '#4ecdc4';
+                                if (score >= 0.4) return '#95e1d3';
                                 return '#95a5a6';
                             }
                         },
                         label: {
                             show: true,
                             position: 'top',
-                            formatter: '{c}'
+                            formatter: function(params) {
+                                const v = Number(params.value);
+                                return (v >= 0 && v <= 1) ? (v * 100).toFixed(1) + '%' : v;
+                            }
                         }
                     },
                     {
