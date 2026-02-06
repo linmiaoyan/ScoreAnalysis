@@ -147,9 +147,8 @@
     {% endif %}
     <div class="container">
         {% if snapshot_mode %}
-        <div class="alert alert-info mb-3 d-flex align-items-center">
+        <div class="alert alert-info mb-3">
             <span>成绩分析结果快照 · 仅供查看</span>
-            <a href="/" class="btn btn-sm btn-outline-primary ms-3">返回分析页</a>
         </div>
         {% endif %}
         <div id="uploadSection">
@@ -161,11 +160,11 @@
                 <h5 class="mb-0">1. 上传数据文件</h5>
             </div>
             <div class="card-body">
-                <form id="uploadForm">
+                <form id="uploadForm" onsubmit="return false;">
                     <div class="row">
                         <div class="col-md-6">
                             <label for="league_file" class="form-label">【联盟全体数据】文件</label>
-                            <input type="file" class="form-control" id="league_file" name="league_file" accept=".xlsx,.xls" required>
+                            <input type="file" class="form-control" id="league_file" name="league_file" accept=".xlsx,.xls">
                             <small class="form-text text-muted">请上传包含联盟全体成绩的Excel文件（需含“分数”工作表）</small>
                         </div>
                         <div class="col-md-6">
@@ -184,7 +183,7 @@
                             <small class="form-text text-muted d-block mt-1">与Excel中“学校”列完全一致即可，可填全称、简称等</small>
                         </div>
                     </div>
-                    <button type="submit" class="btn btn-primary mt-3">上传文件</button>
+                    <button type="button" class="btn btn-primary mt-3" id="uploadBtn">上传文件</button>
                 </form>
                 <div id="uploadStatus" class="mt-3"></div>
             </div>
@@ -504,10 +503,8 @@
         updateSubjectLinesDisplay();
         
         
-        // 文件上传（仅联盟全体数据）
-        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
-            
+        // 文件上传（仅联盟全体数据）- 用按钮点击触发，避免表单 POST 到 /
+        document.getElementById('uploadBtn').addEventListener('click', async function() {
             const leagueFile = document.getElementById('league_file').files[0];
             if (!leagueFile) {
                 alert('请选择【联盟全体数据】文件');
@@ -1971,24 +1968,14 @@
                 `;
             }
             
-            // 2. 班级各科情况表格（特控线）
-            if (classSubjectsTekong && classSubjectsTekong.classes) {
-                html += createClassSubjectsTable(classSubjectsTekong, '特控线', tekongLine);
+            // 2. 班级各科过线情况（特控线+一段线合并为一个卡片，按钮切换）
+            if ((classSubjectsTekong && classSubjectsTekong.classes) || (classSubjectsYiduan && classSubjectsYiduan.classes)) {
+                html += createUnifiedClassSubjectsSection(classSubjectsTekong, classSubjectsYiduan, tekongLine, yiduanLine);
             }
             
-            // 3. 班级各科情况表格（一段线）
-            if (classSubjectsYiduan && classSubjectsYiduan.classes) {
-                html += createClassSubjectsTable(classSubjectsYiduan, '一段线', yiduanLine);
-            }
-            
-            // 4. 学科分数线详情（特控线）
-            if (subjectLinesTekong && subjectLinesTekong.subjects) {
-                html += createSubjectLinesDetails(subjectLinesTekong, '特控线');
-            }
-            
-            // 5. 学科分数线详情（一段线）
-            if (subjectLinesYiduan && subjectLinesYiduan.subjects) {
-                html += createSubjectLinesDetails(subjectLinesYiduan, '一段线');
+            // 3. 学科分数线详情（特控线+一段线合并为一个卡片，按钮切换）
+            if ((subjectLinesTekong && subjectLinesTekong.subjects) || (subjectLinesYiduan && subjectLinesYiduan.subjects)) {
+                html += createUnifiedSubjectLinesSection(subjectLinesTekong, subjectLinesYiduan);
             }
             
             // 6. 总分分析
@@ -2069,149 +2056,162 @@
             html += row('平均分', 'avg_score');
             html += row('平均分排名', 'avg_rank');
             html += '</tbody></table></div>';
+            var totalTableHtml = html;
 
-            const subjectRankings = (dataTekong && dataTekong.subject_rankings) ? dataTekong.subject_rankings : {};
-            const subjectsWithRank = sortSubjects(Object.keys(subjectRankings));
+            var subjectRankings = (dataTekong && dataTekong.subject_rankings) ? dataTekong.subject_rankings : {};
+            var subjectsWithRank = sortSubjects(Object.keys(subjectRankings));
+            var avgRankHtml = '';
             if (subjectsWithRank.length > 0) {
-                html += '<h5 class="mb-3">各学科平均分及平均分排名</h5><div class="table-responsive mb-4"><table class="table table-bordered table-sm league-comparison-table"><thead><tr><th>学科</th>';
-                schoolList.forEach(s => { html += '<th>' + s + '</th>'; });
-                html += '</tr></thead><tbody>';
-                subjectsWithRank.forEach(subj => {
-                    const list = subjectRankings[subj] || [];
-                    const bySchoolSubj = {};
-                    list.forEach(x => { bySchoolSubj[x.school_name] = { avg: x.average_score, rank: x.rank }; });
-                    html += '<tr><td class="text-nowrap">' + subj + ' 平均分</td>';
-                    schoolList.forEach(name => {
-                        const o = bySchoolSubj[name];
-                        html += '<td>' + (o ? o.avg : '-') + '</td>';
+                avgRankHtml = '<div class="table-responsive mb-4"><table class="table table-bordered table-sm league-comparison-table"><thead><tr><th>学科</th>';
+                schoolList.forEach(function(s) { avgRankHtml += '<th>' + s + '</th>'; });
+                avgRankHtml += '</tr></thead><tbody>';
+                subjectsWithRank.forEach(function(subj) {
+                    var list = subjectRankings[subj] || [];
+                    var bySchoolSubj = {};
+                    list.forEach(function(x) { bySchoolSubj[x.school_name] = { avg: x.average_score, rank: x.rank }; });
+                    avgRankHtml += '<tr><td class="text-nowrap">' + subj + ' 平均分</td>';
+                    schoolList.forEach(function(name) {
+                        var o = bySchoolSubj[name];
+                        avgRankHtml += '<td>' + (o ? o.avg : '-') + '</td>';
                     });
-                    html += '</tr><tr><td class="text-nowrap">' + subj + ' 名次</td>';
-                    schoolList.forEach(name => {
-                        const o = bySchoolSubj[name];
-                        html += '<td>' + (o ? o.rank : '-') + '</td>';
+                    avgRankHtml += '</tr><tr><td class="text-nowrap">' + subj + ' 名次</td>';
+                    schoolList.forEach(function(name) {
+                        var o = bySchoolSubj[name];
+                        avgRankHtml += '<td>' + (o ? o.rank : '-') + '</td>';
                     });
-                    html += '</tr>';
+                    avgRankHtml += '</tr>';
                 });
-                html += '</tbody></table></div>';
+                avgRankHtml += '</tbody></table></div>';
             }
 
-            const renderSubjectLineTable = (lineName, lineData) => {
+            function renderSubjectLineTable(lineName, lineData) {
                 if (!lineData || Object.keys(lineData).length === 0) return '';
-                const allSubjects = sortSubjects(Object.keys(lineData));
-                let t = '<h5 class="mb-3">各学科' + lineName + '有效率</h5><div class="table-responsive mb-4"><table class="table table-bordered table-sm league-comparison-table"><thead><tr><th>学科</th>';
-                schoolList.forEach(s => { t += '<th>' + s + '</th>'; });
+                var allSubjects = sortSubjects(Object.keys(lineData));
+                var t = '<div class="table-responsive mb-4"><table class="table table-bordered table-sm league-comparison-table"><thead><tr><th>学科</th>';
+                schoolList.forEach(function(s) { t += '<th>' + s + '</th>'; });
                 t += '</tr></thead><tbody>';
-                allSubjects.forEach(subj => {
-                    const info = lineData[subj];
-                    const stats = (info && info.school_stats) || [];
-                    const bySchoolSubj = {};
-                    stats.forEach(x => {
-                        bySchoolSubj[x.school_name] = { passed: x.passed_count, rate: x.pass_rate, rank: x.rank != null ? x.rank : '-' };
-                    });
+                allSubjects.forEach(function(subj) {
+                    var info = lineData[subj];
+                    var stats = (info && info.school_stats) || [];
+                    var bySchoolSubj = {};
+                    stats.forEach(function(x) { bySchoolSubj[x.school_name] = { passed: x.passed_count, rate: x.pass_rate, rank: x.rank != null ? x.rank : '-' }; });
                     t += '<tr><td class="text-nowrap">' + subj + ' 上线人数</td>';
-                    schoolList.forEach(name => {
-                        const o = bySchoolSubj[name];
+                    schoolList.forEach(function(name) {
+                        var o = bySchoolSubj[name];
                         t += '<td>' + (o ? o.passed : '-') + '</td>';
                     });
                     t += '</tr><tr><td class="text-nowrap">' + subj + ' 上线率</td>';
-                    schoolList.forEach(name => {
-                        const o = bySchoolSubj[name];
+                    schoolList.forEach(function(name) {
+                        var o = bySchoolSubj[name];
                         t += '<td>' + (o ? (typeof o.rate === 'number' ? o.rate + '%' : o.rate) : '-') + '</td>';
                     });
                     t += '</tr><tr><td class="text-nowrap">' + subj + ' 排名</td>';
-                    schoolList.forEach(name => {
-                        const o = bySchoolSubj[name];
+                    schoolList.forEach(function(name) {
+                        var o = bySchoolSubj[name];
                         t += '<td>' + (o ? o.rank : '-') + '</td>';
                     });
                     t += '</tr>';
                 });
                 t += '</tbody></table></div>';
                 return t;
-            };
-            if (subjectLineRankings['特控线']) {
-                html += renderSubjectLineTable('特控线', subjectLineRankings['特控线']);
             }
-            if (subjectLineRankings['一段线']) {
-                html += renderSubjectLineTable('一段线', subjectLineRankings['一段线']);
-            }
-            return html;
+            var tekongLineHtml = subjectLineRankings['特控线'] ? renderSubjectLineTable('特控线', subjectLineRankings['特控线']) : '';
+            var yiduanLineHtml = subjectLineRankings['一段线'] ? renderSubjectLineTable('一段线', subjectLineRankings['一段线']) : '';
+
+            var tabs = [];
+            if (totalTableHtml) tabs.push({ id: 'total', label: '总表', html: totalTableHtml });
+            if (avgRankHtml) tabs.push({ id: 'avg', label: '各学科平均分及排名', html: avgRankHtml });
+            if (tekongLineHtml) tabs.push({ id: 'tekong', label: '各学科特控线有效率', html: tekongLineHtml });
+            if (yiduanLineHtml) tabs.push({ id: 'yiduan', label: '各学科一段线有效率', html: yiduanLineHtml });
+            if (tabs.length === 0) return totalTableHtml || '';
+            if (tabs.length === 1) return tabs[0].html;
+
+            var compTs = Date.now();
+            var compContentId = 'league_comp_content_' + compTs;
+            var out = '<div class="card mb-3 result-section-card"><div class="card-header result-section-header result-section-header-league"><h5 class="mb-0">各校对比表</h5></div><div class="card-body">';
+            out += '<p class="text-muted mb-2">选择下方按钮切换查看</p><div class="btn-group flex-wrap mb-3" role="group">';
+            tabs.forEach(function(tab, idx) {
+                out += '<input type="radio" class="btn-check" name="league_comp_tab_' + compTs + '" id="league_comp_tab_' + compTs + '_' + tab.id + '" value="' + tab.id + '" ' + (idx === 0 ? 'checked' : '') + '><label class="btn btn-outline-primary btn-sm" for="league_comp_tab_' + compTs + '_' + tab.id + '">' + tab.label + '</label>';
+            });
+            out += '</div><div id="' + compContentId + '">' + tabs[0].html + '</div></div></div>';
+            (function(cid, tabList) {
+                setTimeout(function() {
+                    var el = document.getElementById(cid);
+                    if (!el) return;
+                    document.querySelectorAll('input[name="league_comp_tab_' + compTs + '"]').forEach(function(radio) {
+                        radio.addEventListener('change', function() {
+                            var v = radio.value;
+                            var tab = tabList.filter(function(t) { return t.id === v; })[0];
+                            if (tab && el) el.innerHTML = tab.html;
+                        });
+                    });
+                }, 50);
+            })(compContentId, tabs);
+            return out;
         }
 
-        // 我校与各校对比区块（联盟数据）
+        // 我校与各校对比区块（联盟数据）：分数线用按钮切换，不堆多个 div
         function createLeagueComparisonSection(leagueAnalysis, tekongLine, yiduanLine) {
-            const scoreToName = {};
+            var scoreToName = {};
             if (tekongLine) scoreToName[tekongLine] = '特控线';
             if (yiduanLine) scoreToName[yiduanLine] = '一段线';
-            const subjectLineRankings = leagueAnalysis.subject_line_rankings || {};
-            // 过滤掉 line_xxx 键，只遍历分数线结果
-            const lineKeys = Object.keys(leagueAnalysis).filter(k => k.startsWith('line_'));
-            let html = `
-                <div class="card mb-3 result-section-card">
-                    <div class="card-header result-section-header result-section-header-league">
-                        <h5 class="mb-0">五、我校与各校对比</h5>
-                    </div>
-                    <div class="card-body">
-            `;
-            for (const key of lineKeys) {
-                const data = leagueAnalysis[key];
+            var subjectLineRankings = leagueAnalysis.subject_line_rankings || {};
+            var lineKeys = Object.keys(leagueAnalysis).filter(function(k) { return k.startsWith('line_'); });
+            var contentByLine = {};
+            var firstLineName = null;
+            for (var i = 0; i < lineKeys.length; i++) {
+                var key = lineKeys[i];
+                var data = leagueAnalysis[key];
                 if (!data || data.score_line == null) continue;
-                const lineName = scoreToName[data.score_line] || `分数线${data.score_line}分`;
-                html += `
-                    <div class="mb-4">
-                        <h6 class="text-primary">${lineName} (${data.score_line}分)</h6>
-                        <div class="row mb-3">
-                            <div class="col-md-3">
-                                <div class="stat-card">
-                                    <h3>${data.league_passed_count}/${data.league_total}</h3>
-                                    <p>联盟过线/总人数</p>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stat-card">
-                                    <h3>${data.school_passed_count}/${data.school_total}</h3>
-                                    <p>我校过线/总人数</p>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stat-card">
-                                    <h3>${data.school_pass_rate}%</h3>
-                                    <p>我校过线率</p>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stat-card">
-                                    <h3>${data.school_rank != null ? '第' + data.school_rank + '名' : '-'}</h3>
-                                    <p>我校在各校中排名</p>
-                                </div>
-                            </div>
-                        </div>
-                        ${data.school_rank != null ? `<p class="alert alert-info mb-2"><strong>我校的线在各校的排名：</strong>第 ${data.school_rank} 名</p>` : ''}
-                        ${data.school_subject_ranks && Object.keys(data.school_subject_ranks).length > 0 ? `
-                        <h6>我校各学科在各校中的排名（按平均分）</h6>
-                        <div class="table-responsive mb-3">
-                            <table class="table table-striped table-sm">
-                                <thead><tr><th>学科</th><th>我校排名</th><th>我校平均分</th></tr></thead>
-                                <tbody>
-                                    ${sortSubjects(Object.keys(data.school_subject_ranks)).map(subj => {
-                                        const rank = data.school_subject_ranks[subj];
-                                        const avg = (data.school_subject_averages && data.school_subject_averages[subj] != null) ? data.school_subject_averages[subj] : '-';
-                                        return '<tr><td>' + subj + '</td><td><strong>第 ' + rank + ' 名</strong></td><td>' + avg + '</td></tr>';
-                                    }).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                        ` : ''}
-                        <h6>各校过线率排名（前10）</h6>
-                        <div class="table-responsive mb-3">
-                            <table class="table table-striped table-sm">
-                                <thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th><th>平均分</th></tr></thead>
-                                <tbody>
-                                    ${(data.school_stats || []).slice(0, 10).map((s, i) => '<tr><td>' + (i+1) + '</td><td>' + s.school_name + '</td><td>' + s.total_students + '</td><td>' + s.passed_count + '</td><td><strong>' + s.pass_rate + '%</strong></td><td>' + s.average_score + '</td></tr>').join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                `;
+                var lineName = scoreToName[data.score_line] || ('分数线' + data.score_line + '分');
+                if (!firstLineName) firstLineName = lineName;
+                var rankTable = '';
+                if (data.school_subject_ranks && Object.keys(data.school_subject_ranks).length > 0) {
+                    rankTable = '<h6>我校各学科在各校中的排名（按平均分）</h6><div class="table-responsive mb-3"><table class="table table-striped table-sm"><thead><tr><th>学科</th><th>我校排名</th><th>我校平均分</th></tr></thead><tbody>' +
+                        sortSubjects(Object.keys(data.school_subject_ranks)).map(function(subj) {
+                            var rank = data.school_subject_ranks[subj];
+                            var avg = (data.school_subject_averages && data.school_subject_averages[subj] != null) ? data.school_subject_averages[subj] : '-';
+                            return '<tr><td>' + subj + '</td><td><strong>第 ' + rank + ' 名</strong></td><td>' + avg + '</td></tr>';
+                        }).join('') + '</tbody></table></div>';
+                }
+                var top10 = (data.school_stats || []).slice(0, 10).map(function(s, i) {
+                    return '<tr><td>' + (i+1) + '</td><td>' + s.school_name + '</td><td>' + s.total_students + '</td><td>' + s.passed_count + '</td><td><strong>' + s.pass_rate + '%</strong></td><td>' + (s.average_score != null ? s.average_score : '-') + '</td></tr>';
+                }).join('');
+                contentByLine[lineName] = '<h6 class="text-primary">' + lineName + ' (' + data.score_line + '分)</h6><div class="row mb-3">' +
+                    '<div class="col-md-3"><div class="stat-card"><h3>' + data.league_passed_count + '/' + data.league_total + '</h3><p>联盟过线/总人数</p></div></div>' +
+                    '<div class="col-md-3"><div class="stat-card"><h3>' + data.school_passed_count + '/' + data.school_total + '</h3><p>我校过线/总人数</p></div></div>' +
+                    '<div class="col-md-3"><div class="stat-card"><h3>' + data.school_pass_rate + '%</h3><p>我校过线率</p></div></div>' +
+                    '<div class="col-md-3"><div class="stat-card"><h3>' + (data.school_rank != null ? '第' + data.school_rank + '名' : '-') + '</h3><p>我校在各校中排名</p></div></div></div>' +
+                    (data.school_rank != null ? '<p class="alert alert-info mb-2"><strong>我校的线在各校的排名：</strong>第 ' + data.school_rank + ' 名</p>' : '') +
+                    rankTable +
+                    '<h6>各校过线率排名（前10）</h6><div class="table-responsive mb-3"><table class="table table-striped table-sm"><thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th><th>平均分</th></tr></thead><tbody>' + top10 + '</tbody></table></div>';
+            }
+            var lineNames = Object.keys(contentByLine);
+            if (lineNames.length === 0) firstLineName = null; else if (!firstLineName) firstLineName = lineNames[0];
+            var ts = Date.now();
+            var contentId = 'league_compare_content_' + ts;
+            var html = '<div class="card mb-3 result-section-card"><div class="card-header result-section-header result-section-header-league"><h5 class="mb-0">五、我校与各校对比</h5></div><div class="card-body">';
+            html += '<p class="text-muted mb-2">选择分数线查看</p><div class="btn-group flex-wrap mb-3" role="group">';
+            for (var j = 0; j < lineNames.length; j++) {
+                var ln = lineNames[j];
+                var isFirst = (ln === firstLineName);
+                html += '<input type="radio" class="btn-check" name="league_compare_line_' + ts + '" id="league_line_' + ts + '_' + j + '" value="' + ln + '" ' + (isFirst ? 'checked' : '') + '><label class="btn btn-sm ' + (ln === '特控线' ? 'btn-outline-danger' : 'btn-outline-success') + '" for="league_line_' + ts + '_' + j + '">' + ln + '</label>';
+            }
+            html += '</div><div id="' + contentId + '"></div>';
+            html += '</div></div>';
+            if (firstLineName && contentByLine[firstLineName]) {
+                (function(cid, byLine, first) {
+                    setTimeout(function() {
+                        var el = document.getElementById(cid);
+                        if (el) el.innerHTML = byLine[first] || '';
+                        document.querySelectorAll('input[name="league_compare_line_' + ts + '"]').forEach(function(radio) {
+                            radio.addEventListener('change', function() {
+                                var e = document.getElementById(cid);
+                                if (e && this.value) e.innerHTML = byLine[this.value] || '';
+                            });
+                        });
+                    }, 50);
+                })(contentId, contentByLine, firstLineName);
             }
             // 各校对比总表 + 各学科平均分/特控/一段（表格形式，可导出）
             html += createLeagueSchoolComparisonTables(leagueAnalysis, tekongLine, yiduanLine, subjectLineRankings);
@@ -2220,99 +2220,149 @@
                 // 1) 各学科过线率对比图（各校），风格类似“班级各科过线情况”
                 html += createLeagueSubjectCharts(subjectLineRankings);
 
-                // 2) 校际各学科过线率汇总表：按“学校”为行，“学科”为列，便于校际横向比较
-                html += '<hr class="my-4"><h5 class="mb-3">校际各学科过线率汇总</h5>';
-                for (const [lineName, subjects] of Object.entries(subjectLineRankings)) {
-                    if (!subjects || Object.keys(subjects).length === 0) continue;
-                    const lineColor = lineName === '特控线' ? 'danger' : 'success';
-                    const allSubjects = sortSubjects(Object.keys(subjects));
-                    const schoolSet = new Set();
-                    allSubjects.forEach(subj => {
-                        const info = subjects[subj];
-                        (info && info.school_stats || []).forEach(s => {
-                            if (s && s.school_name != null) {
-                                schoolSet.add(String(s.school_name));
-                            }
+                // 2) 校际各学科过线率汇总表：一个卡片，分数线按钮切换
+                var summaryLineNames = Object.keys(subjectLineRankings).filter(function(ln) {
+                    var s = subjectLineRankings[ln];
+                    return s && Object.keys(s).length > 0;
+                });
+                if (summaryLineNames.length > 0) {
+                    var summaryTs = Date.now();
+                    var summaryContentId = 'league_summary_content_' + summaryTs;
+                    var summaryByLine = {};
+                    summaryLineNames.forEach(function(lineName) {
+                        var subjects = subjectLineRankings[lineName];
+                        var allSubjects = sortSubjects(Object.keys(subjects));
+                        var schoolSet = {};
+                        allSubjects.forEach(function(subj) {
+                            var info = subjects[subj];
+                            (info && info.school_stats || []).forEach(function(s) {
+                                if (s && s.school_name != null) schoolSet[String(s.school_name)] = true;
+                            });
                         });
+                        var schools = Object.keys(schoolSet);
+                        if (schools.length === 0) { summaryByLine[lineName] = ''; return; }
+                        var thCells = allSubjects.map(function(s) { return '<th>' + s + '过线率(%)</th>'; }).join('');
+                        var tbody = schools.map(function(schoolName) {
+                            var cells = allSubjects.map(function(subj) {
+                                var info = subjects[subj];
+                                var stats = (info && info.school_stats) || [];
+                                var found = stats.filter(function(x) { return String(x.school_name) === String(schoolName); })[0];
+                                return '<td>' + (found ? found.pass_rate : '-') + '</td>';
+                            }).join('');
+                            return '<tr><td>' + schoolName + '</td>' + cells + '</tr>';
+                        }).join('');
+                        summaryByLine[lineName] = '<div class="table-responsive"><table class="table table-striped table-sm table-bordered"><thead><tr><th>学校</th>' + thCells + '</tr></thead><tbody>' + tbody + '</tbody></table></div>';
                     });
-                    const schools = Array.from(schoolSet);
-                    if (schools.length === 0) continue;
-
-                    html += `<div class="mb-4"><h6 class="text-${lineColor}">${lineName}</h6>`;
-                    html += `
-                        <div class="table-responsive">
-                            <table class="table table-striped table-sm table-bordered">
-                                <thead>
-                                    <tr>
-                                        <th>学校</th>
-                                        ${allSubjects.map(s => `<th>${s}过线率(%)</th>`).join('')}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${schools.map(schoolName => {
-                                        const cells = allSubjects.map(subj => {
-                                            const info = subjects[subj];
-                                            const stats = (info && info.school_stats) || [];
-                                            const found = stats.find(x => String(x.school_name) === String(schoolName));
-                                            return '<td>' + (found ? found.pass_rate : '-') + '</td>';
-                                        }).join('');
-                                        return '<tr><td>' + schoolName + '</td>' + cells + '</tr>';
-                                    }).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                    `;
-                    html += '</div>';
+                    html += '<div class="card mb-3 result-section-card"><div class="card-header result-section-header result-section-header-league"><h5 class="mb-0">校际各学科过线率汇总</h5></div><div class="card-body">';
+                    html += '<p class="text-muted mb-2">选择分数线查看</p><div class="btn-group flex-wrap mb-3" role="group">';
+                    summaryLineNames.forEach(function(ln, idx) {
+                        html += '<input type="radio" class="btn-check" name="league_summary_line_' + summaryTs + '" id="league_summary_' + summaryTs + '_' + idx + '" value="' + ln + '" ' + (idx === 0 ? 'checked' : '') + '><label class="btn btn-sm ' + (ln === '特控线' ? 'btn-outline-danger' : 'btn-outline-success') + '" for="league_summary_' + summaryTs + '_' + idx + '">' + ln + '</label>';
+                    });
+                    html += '</div><div id="' + summaryContentId + '">' + (summaryByLine[summaryLineNames[0]] || '') + '</div></div></div>';
+                    (function(cid, byLine, names) {
+                        setTimeout(function() {
+                            document.querySelectorAll('input[name="league_summary_line_' + summaryTs + '"]').forEach(function(radio) {
+                                radio.addEventListener('change', function() {
+                                    var el = document.getElementById(cid);
+                                    if (el && this.value) el.innerHTML = byLine[this.value] || '';
+                                });
+                            });
+                        }, 50);
+                    })(summaryContentId, summaryByLine, summaryLineNames);
                 }
             }
             html += '</div></div>';
             return html;
         }
 
-        // 校际各学科过线率对比图（按学校），结构类似“班级各科过线情况”
+        // 校际各学科过线率对比图（一个卡片，分数线+学科按钮切换）
         function createLeagueSubjectCharts(subjectLineRankings) {
-            let html = '<hr class="my-4"><h5 class="mb-3">各学科过线率对比图（各校）</h5>';
-            window._leagueSubjectsData = window._leagueSubjectsData || {};
+            var lineNames = Object.keys(subjectLineRankings || {}).filter(function(ln) {
+                var s = subjectLineRankings[ln];
+                return s && Object.keys(s).length > 0;
+            });
+            if (lineNames.length === 0) return '';
+            var ts = Date.now();
+            var chartId = 'league_subj_chart_u_' + ts;
+            var tableId = 'league_subj_table_u_' + ts;
+            var firstLine = lineNames[0];
+            var subjListByLine = {};
+            lineNames.forEach(function(ln) {
+                subjListByLine[ln] = sortSubjects(Object.keys(subjectLineRankings[ln]));
+            });
+            var firstSubj = subjListByLine[firstLine] && subjListByLine[firstLine][0];
 
-            for (const [lineName, subjects] of Object.entries(subjectLineRankings)) {
-                if (!subjects || Object.keys(subjects).length === 0) continue;
-                const allSubjects = sortSubjects(Object.keys(subjects));
-                if (allSubjects.length === 0) continue;
-                const firstSubject = allSubjects[0];
-                const chartId = `league_subject_chart_${lineName}_${Date.now()}_${Math.floor(Math.random()*1000)}`;
-                const tableId = chartId + '_table';
+            var html = '<div class="card mb-3 result-section-card"><div class="card-header result-section-header result-section-header-league"><h5 class="mb-0">各学科过线率对比图（各校）</h5></div><div class="card-body">';
+            html += '<p class="text-muted mb-2">先选分数线，再选学科</p><div class="btn-group flex-wrap mb-2" role="group">';
+            lineNames.forEach(function(ln, idx) {
+                html += '<input type="radio" class="btn-check" name="league_subj_line_' + ts + '" id="league_subj_line_' + ts + '_' + idx + '" value="' + ln + '" ' + (ln === firstLine ? 'checked' : '') + '><label class="btn btn-sm ' + (ln === '特控线' ? 'btn-outline-danger' : 'btn-outline-success') + '" for="league_subj_line_' + ts + '_' + idx + '">' + ln + '</label>';
+            });
+            html += '</div><div class="btn-group flex-wrap mb-3" id="league_subj_subj_wrap_' + ts + '" role="group"></div>';
+            html += '<div class="chart-container" id="' + chartId + '" style="height:380px;"></div><div id="' + tableId + '" class="table-responsive mt-3"></div></div></div>';
 
-                html += `
-                    <div class="card mb-3 result-section-card">
-                        <div class="card-header result-section-header result-section-header-league">
-                            <h5 class="mb-0">${lineName} - 校际各学科过线率对比</h5>
-                        </div>
-                        <div class="card-body">
-                            <p class="text-muted mb-2">点击学科按钮，查看不同学校在该学科上的过线率。</p>
-                            <div class="btn-group flex-wrap mb-3" role="group">
-                                ${allSubjects.map(s => `
-                                    <input type="radio" class="btn-check" name="${chartId}_subj" id="${chartId}_btn_${s}" value="${s}" ${s === firstSubject ? 'checked' : ''}>
-                                    <label class="btn btn-outline-primary btn-sm class-subject-tab" for="${chartId}_btn_${s}">${s}</label>
-                                `).join('')}
-                            </div>
-                            <div class="chart-container" id="${chartId}" style="height: 380px;"></div>
-                            <div id="${tableId}" class="table-responsive mt-3"></div>
-                        </div>
-                    </div>
-                `;
+            window._leagueSubjectsUnified = window._leagueSubjectsUnified || {};
+            window._leagueSubjectsUnified[ts] = { subjectLineRankings: subjectLineRankings, chartId: chartId, tableId: tableId, subjListByLine: subjListByLine, lineNames: lineNames };
 
-                window._leagueSubjectsData[chartId] = { lineName, subjects, allSubjects };
-
-                setTimeout(() => {
-                    renderLeagueSubjectView(chartId, firstSubject);
-                    document.querySelectorAll(\`input[name=\"${chartId}_subj\"]\`).forEach(radio => {
-                        radio.addEventListener('change', function() {
-                            if (this.checked) renderLeagueSubjectView(chartId, this.value);
-                        });
-                    });
-                }, 100);
+            function fillLeagueSubjButtons(uid) {
+                var u = window._leagueSubjectsUnified[uid];
+                if (!u) return;
+                var lineRadio = document.querySelector('input[name="league_subj_line_' + uid + '"]:checked');
+                var lineName = lineRadio ? lineRadio.value : u.lineNames[0];
+                var subjList = u.subjListByLine[lineName] || [];
+                var wrap = document.getElementById('league_subj_subj_wrap_' + uid);
+                if (!wrap) return;
+                wrap.innerHTML = subjList.map(function(s, i) {
+                    return '<input type="radio" class="btn-check" name="league_subj_subj_' + uid + '" id="league_subj_subj_' + uid + '_' + s + '" value="' + s + '" ' + (i === 0 ? 'checked' : '') + '><label class="btn btn-outline-primary btn-sm" for="league_subj_subj_' + uid + '_' + s + '">' + s + '</label>';
+                }).join('');
+                wrap.querySelectorAll('input').forEach(function(radio) {
+                    radio.addEventListener('change', function() { if (this.checked) renderLeagueSubjectViewUnified(uid); });
+                });
             }
 
+            function renderLeagueSubjectViewUnified(uid) {
+                var u = window._leagueSubjectsUnified[uid];
+                if (!u) return;
+                var lineRadio = document.querySelector('input[name="league_subj_line_' + uid + '"]:checked');
+                var lineName = lineRadio ? lineRadio.value : u.lineNames[0];
+                var subjRadio = document.querySelector('input[name="league_subj_subj_' + uid + '"]:checked');
+                var subjects = u.subjectLineRankings[lineName];
+                var subject = subjRadio ? subjRadio.value : (u.subjListByLine[lineName] && u.subjListByLine[lineName][0]);
+                if (!subjects || !subject || !subjects[subject]) return;
+                var info = subjects[subject];
+                var stats = (info.school_stats || []).slice().sort(function(a, b) { return (b.pass_rate || 0) - (a.pass_rate || 0); });
+                var schools = stats.map(function(s) { return s.school_name; });
+                var passRates = stats.map(function(s) { return s.pass_rate; });
+                var totals = stats.map(function(s) { return s.total_students; });
+                var container = document.getElementById(u.chartId);
+                var tableContainer = document.getElementById(u.tableId);
+                if (container) {
+                    var existingChart = echarts.getInstanceByDom(container);
+                    if (existingChart) existingChart.dispose();
+                    var chart = echarts.init(container);
+                    chart.setOption({
+                        title: { text: lineName + ' - ' + subject + ' 各校过线率', left: 'center' },
+                        tooltip: { trigger: 'axis', formatter: function(params) { var i = params[0].dataIndex; return schools[i] + '<br/>过线率: ' + passRates[i] + '%<br/>总人数: ' + totals[i]; } },
+                        xAxis: { type: 'category', name: '学校', data: schools, axisLabel: { rotate: 45, interval: 0 } },
+                        yAxis: { type: 'value', name: '过线率(%)', max: 100 },
+                        series: [{ name: '过线率(%)', type: 'bar', data: passRates, itemStyle: { color: function(p) { return p.dataIndex < 3 ? '#ff6b6b' : '#4ecdc4'; } } }]
+                    });
+                    setTimeout(function() { chart.resize(); }, 80);
+                }
+                if (tableContainer) {
+                    var rows = stats.map(function(s, i) {
+                        return '<tr><td>' + (i + 1) + '</td><td>' + s.school_name + '</td><td>' + s.total_students + '</td><td>' + s.passed_count + '</td><td><strong>' + s.pass_rate + '%</strong></td></tr>';
+                    }).join('');
+                    tableContainer.innerHTML = '<table class="table table-striped table-bordered table-sm mb-0"><thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th></tr></thead><tbody>' + rows + '</tbody></table>';
+                }
+            }
+
+            setTimeout(function() {
+                fillLeagueSubjButtons(ts);
+                renderLeagueSubjectViewUnified(ts);
+                document.querySelectorAll('input[name="league_subj_line_' + ts + '"]').forEach(function(radio) {
+                    radio.addEventListener('change', function() { fillLeagueSubjButtons(ts); renderLeagueSubjectViewUnified(ts); });
+                });
+            }, 100);
             return html;
         }
 
@@ -2365,18 +2415,223 @@
             setTimeout(() => chart.resize(), 80);
 
             if (tableContainer) {
-                tableContainer.innerHTML = \`
-                    <table class="table table-striped table-bordered table-sm mb-0">
-                        <thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th></tr></thead>
-                        <tbody>
-                            \${stats.map((s, i) => \`<tr><td>\${i+1}</td><td>\${s.school_name}</td><td>\${s.total_students}</td><td>\${s.passed_count}</td><td><strong>\${s.pass_rate}%</strong></td></tr>\`).join('')}
-                        </tbody>
-                    </table>
-                \`;
+                var rows = stats.map(function(s, i) {
+                    return '<tr><td>' + (i+1) + '</td><td>' + s.school_name + '</td><td>' + s.total_students + '</td><td>' + s.passed_count + '</td><td><strong>' + s.pass_rate + '%</strong></td></tr>';
+                }).join('');
+                tableContainer.innerHTML = '<table class="table table-striped table-bordered table-sm mb-0">' +
+                    '<thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th></tr></thead>' +
+                    '<tbody>' + rows + '</tbody></table>';
             }
         }
         
-        // 创建班级各科情况：按学科分开展示，用选项卡切换
+        // 班级各科过线情况（特控线+一段线合并为一张卡，分数线+学科用按钮切换）
+        function createUnifiedClassSubjectsSection(tekongData, yiduanData, tekongLine, yiduanLine) {
+            var ts = Date.now();
+            var chartId = 'class_subj_chart_u_' + ts;
+            var tableId = 'class_subj_table_u_' + ts;
+            var accordionId = 'class_subj_accordion_u_' + ts;
+            var lineTekong = (tekongData && tekongData.classes && Object.keys(tekongData.classes).length > 0);
+            var lineYiduan = (yiduanData && yiduanData.classes && Object.keys(yiduanData.classes).length > 0);
+            var firstLine = lineTekong ? '特控线' : '一段线';
+            var allSubjectsT = lineTekong ? sortSubjects(Object.keys(tekongData.subject_lines || {})) : [];
+            var allSubjectsY = lineYiduan ? sortSubjects(Object.keys(yiduanData.subject_lines || {})) : [];
+            var firstSubj = (firstLine === '特控线' ? allSubjectsT[0] : allSubjectsY[0]) || '';
+            var allClassesT = lineTekong ? Object.keys(tekongData.classes).sort(function(a,b){ return (isNaN(Number(a))||isNaN(Number(b))) ? String(a).localeCompare(b) : Number(a)-Number(b); }) : [];
+            var allClassesY = lineYiduan ? Object.keys(yiduanData.classes).sort(function(a,b){ return (isNaN(Number(a))||isNaN(Number(b))) ? String(a).localeCompare(b) : Number(a)-Number(b); }) : [];
+
+            var html = '<div class="card mb-3 result-section-card">';
+            html += '<div class="card-header result-section-header result-section-header-info"><h5 class="mb-0">二、班级各科过线情况</h5></div>';
+            html += '<div class="card-body">';
+            html += '<p class="text-muted mb-2">先选分数线，再选学科；表中同时显示过线人数与过线率</p>';
+            html += '<div class="btn-group flex-wrap mb-2" role="group">';
+            if (lineTekong) html += '<input type="radio" class="btn-check" name="class_subj_line_u_' + ts + '" id="class_subj_line_tekong_' + ts + '" value="特控线" ' + (firstLine === '特控线' ? 'checked' : '') + '><label class="btn btn-outline-danger btn-sm" for="class_subj_line_tekong_' + ts + '">特控线</label>';
+            if (lineYiduan) html += '<input type="radio" class="btn-check" name="class_subj_line_u_' + ts + '" id="class_subj_line_yiduan_' + ts + '" value="一段线" ' + (firstLine === '一段线' ? 'checked' : '') + '><label class="btn btn-outline-success btn-sm" for="class_subj_line_yiduan_' + ts + '">一段线</label>';
+            html += '</div>';
+            html += '<div class="btn-group flex-wrap mb-3" id="class_subj_subj_wrap_u_' + ts + '" role="group"></div>';
+            html += '<div class="chart-container mb-3" id="' + chartId + '" style="height:400px;"></div>';
+            html += '<div id="' + tableId + '" class="table-responsive mb-3"></div>';
+            html += '<div class="accordion mb-0" id="' + accordionId + '"><div class="accordion-item"><h2 class="accordion-header">';
+            html += '<button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#class_subj_full_' + ts + '" aria-expanded="false">查看全部学科汇总表</button></h2>';
+            html += '<div id="class_subj_full_' + ts + '" class="accordion-collapse collapse" data-bs-parent="#' + accordionId + '"><div class="accordion-body p-0"><div class="table-responsive" id="class_subj_full_table_wrap_' + ts + '"></div></div></div></div></div>';
+            html += '</div></div>';
+
+            window._classSubjectsUnified = window._classSubjectsUnified || {};
+            window._classSubjectsUnified[ts] = {
+                tekong: tekongData,
+                yiduan: yiduanData,
+                chartId: chartId,
+                tableId: tableId,
+                accordionId: accordionId,
+                allSubjectsT: allSubjectsT,
+                allSubjectsY: allSubjectsY,
+                allClassesT: allClassesT,
+                allClassesY: allClassesY
+            };
+
+            function renderUnifiedClassSubject(uid) {
+                var u = window._classSubjectsUnified[uid];
+                if (!u) return;
+                var lineName = document.querySelector('input[name="class_subj_line_u_' + uid + '"]:checked');
+                lineName = lineName ? lineName.value : '特控线';
+                var data = lineName === '特控线' ? u.tekong : u.yiduan;
+                var allSubjects = lineName === '特控线' ? u.allSubjectsT : u.allSubjectsY;
+                var allClasses = lineName === '特控线' ? u.allClassesT : u.allClassesY;
+                var subjRadio = document.querySelector('input[name="class_subj_subj_u_' + uid + '"]:checked');
+                var subject = subjRadio ? subjRadio.value : (allSubjects[0] || '');
+                if (!data || !allClasses.length || !allSubjects.length) return;
+                var passedCounts = allClasses.map(function(c){ return (data.classes[c] && data.classes[c][subject]) ? data.classes[c][subject].passed_count : 0; });
+                var passRates = allClasses.map(function(c){ return (data.classes[c] && data.classes[c][subject]) ? data.classes[c][subject].pass_rate : 0; });
+                var container = document.getElementById(u.chartId);
+                var tableContainer = document.getElementById(u.tableId);
+                if (container) {
+                    var existingChart = echarts.getInstanceByDom(container);
+                    if (existingChart) existingChart.dispose();
+                    var chart = echarts.init(container);
+                    chart.setOption({
+                        title: { text: lineName + ' - ' + subject + ' 各班过线情况', left: 'center' },
+                        tooltip: { trigger: 'axis', formatter: function(params){ var i=params[0].dataIndex; return allClasses[i]+'班<br/>过线人数: '+passedCounts[i]+'<br/>过线率: '+passRates[i]+'%'; } },
+                        legend: { data: [subject+'过线人数', subject+'过线率'], bottom: 8 },
+                        xAxis: { type: 'category', name: '班级', data: allClasses, axisLabel: { rotate: 45 } },
+                        yAxis: [ { type: 'value', name: '过线人数', position: 'left' }, { type: 'value', name: '过线率(%)', position: 'right', max: 100 } ],
+                        series: [
+                            { name: subject+'过线人数', type: 'bar', data: passedCounts, yAxisIndex: 0, itemStyle: { color: '#4ecdc4' } },
+                            { name: subject+'过线率', type: 'line', data: passRates, yAxisIndex: 1, itemStyle: { color: '#ff6b6b' }, lineStyle: { width: 2 } }
+                        ]
+                    });
+                    setTimeout(function(){ chart.resize(); }, 50);
+                }
+                if (tableContainer) {
+                    var rows = allClasses.map(function(c, i){ return '<tr><td><strong>'+c+'</strong></td><td>'+passedCounts[i]+'</td><td>'+passRates[i]+'%</td></tr>'; }).join('');
+                    tableContainer.innerHTML = '<table class="table table-striped table-bordered table-sm"><thead><tr><th>班级</th><th>过线人数</th><th>过线率(%)</th></tr></thead><tbody>'+rows+'</tbody></table>';
+                }
+                var fullWrap = document.getElementById('class_subj_full_table_wrap_' + uid);
+                if (fullWrap && data.classes) {
+                    var thSubj = allSubjects.map(function(s){ return '<th colspan="2">'+s+'</th>'; }).join('');
+                    var thRate = allSubjects.map(function(){ return '<th>过线人数</th><th>过线率(%)</th>'; }).join('');
+                    var tbody = allClasses.map(function(class_name){
+                        var cells = allSubjects.map(function(subj){
+                            var info = data.classes[class_name] && data.classes[class_name][subj];
+                            return '<td>'+(info ? info.passed_count : '-')+'</td><td>'+(info ? info.pass_rate.toFixed(2) : '-')+'</td>';
+                        }).join('');
+                        return '<tr><td><strong>'+class_name+'</strong></td>'+cells+'</tr>';
+                    }).join('');
+                    fullWrap.innerHTML = '<table class="table table-striped table-bordered table-sm mb-0"><thead><tr><th rowspan="2">班级</th>'+thSubj+'</tr><tr>'+thRate+'</tr></thead><tbody>'+tbody+'</tbody></table>';
+                }
+            }
+
+            function fillSubjectButtons(uid) {
+                var u = window._classSubjectsUnified[uid];
+                if (!u) return;
+                var lineName = document.querySelector('input[name="class_subj_line_u_' + uid + '"]:checked');
+                lineName = lineName ? lineName.value : '特控线';
+                var allSubjects = lineName === '特控线' ? u.allSubjectsT : u.allSubjectsY;
+                var wrap = document.getElementById('class_subj_subj_wrap_u_' + uid);
+                if (!wrap) return;
+                wrap.innerHTML = allSubjects.map(function(s, i){
+                    return '<input type="radio" class="btn-check" name="class_subj_subj_u_' + uid + '" id="class_subj_subj_' + uid + '_' + s + '" value="'+s+'" ' + (i === 0 ? 'checked' : '') + '><label class="btn btn-outline-primary btn-sm" for="class_subj_subj_' + uid + '_' + s + '">'+s+'</label>';
+                }).join('');
+                wrap.querySelectorAll('input').forEach(function(radio){
+                    radio.addEventListener('change', function(){ if (this.checked) renderUnifiedClassSubject(uid); });
+                });
+            }
+
+            setTimeout(function(){
+                fillSubjectButtons(ts);
+                renderUnifiedClassSubject(ts);
+                document.querySelectorAll('input[name="class_subj_line_u_' + ts + '"]').forEach(function(radio){
+                    radio.addEventListener('change', function(){
+                        fillSubjectButtons(ts);
+                        renderUnifiedClassSubject(ts);
+                    });
+                });
+            }, 100);
+            return html;
+        }
+
+        // 学科分数线详情（特控线+一段线合并为一张卡，分数线+学科用按钮切换）
+        function createUnifiedSubjectLinesSection(tekongData, yiduanData) {
+            var ts = Date.now();
+            var tableWrapId = 'subject_lines_table_u_' + ts;
+            var chartId = 'subject_lines_chart_u_' + ts;
+            var hasT = tekongData && tekongData.subjects && Object.keys(tekongData.subjects).length > 0;
+            var hasY = yiduanData && yiduanData.subjects && Object.keys(yiduanData.subjects).length > 0;
+            var firstLine = hasT ? '特控线' : '一段线';
+            var subjListT = hasT ? sortSubjects(Object.keys(tekongData.subjects)) : [];
+            var subjListY = hasY ? sortSubjects(Object.keys(yiduanData.subjects)) : [];
+            var firstSubj = (firstLine === '特控线' ? subjListT[0] : subjListY[0]) || '';
+
+            var html = '<div class="card mb-3 result-section-card">';
+            html += '<div class="card-header result-section-header result-section-header-warning"><h5 class="mb-0">三、各学科分数线详情</h5></div>';
+            html += '<div class="card-body">';
+            html += '<p class="text-muted mb-2">先选分数线，再选学科</p>';
+            html += '<div class="btn-group flex-wrap mb-2" role="group">';
+            if (hasT) html += '<input type="radio" class="btn-check" name="subject_lines_line_u_' + ts + '" id="sl_line_tekong_' + ts + '" value="特控线" ' + (firstLine === '特控线' ? 'checked' : '') + '><label class="btn btn-outline-danger btn-sm" for="sl_line_tekong_' + ts + '">特控线</label>';
+            if (hasY) html += '<input type="radio" class="btn-check" name="subject_lines_line_u_' + ts + '" id="sl_line_yiduan_' + ts + '" value="一段线" ' + (firstLine === '一段线' ? 'checked' : '') + '><label class="btn btn-outline-success btn-sm" for="sl_line_yiduan_' + ts + '">一段线</label>';
+            html += '</div>';
+            html += '<div class="btn-group flex-wrap mb-3" id="subject_lines_subj_wrap_u_' + ts + '" role="group"></div>';
+            html += '<div id="' + tableWrapId + '" class="table-responsive mb-3"></div>';
+            html += '<div class="chart-container" id="' + chartId + '" style="height:400px;"></div>';
+            html += '</div></div>';
+
+            window._subjectLinesUnified = window._subjectLinesUnified || {};
+            window._subjectLinesUnified[ts] = { tekong: tekongData, yiduan: yiduanData, tableWrapId: tableWrapId, chartId: chartId, subjListT: subjListT, subjListY: subjListY };
+
+            function renderUnifiedSubjectLine(uid) {
+                var u = window._subjectLinesUnified[uid];
+                if (!u) return;
+                var lineRadio = document.querySelector('input[name="subject_lines_line_u_' + uid + '"]:checked');
+                var lineName = lineRadio ? lineRadio.value : '特控线';
+                var data = lineName === '特控线' ? u.tekong : u.yiduan;
+                var subjRadio = document.querySelector('input[name="subject_lines_subj_u_' + uid + '"]:checked');
+                var subjList = lineName === '特控线' ? u.subjListT : u.subjListY;
+                var subject = subjRadio ? subjRadio.value : (subjList[0] || '');
+                if (!data || !data.subjects || !data.subjects[subject]) return;
+                var subjectData = data.subjects[subject];
+                var tableWrap = document.getElementById(u.tableWrapId);
+                var container = document.getElementById(u.chartId);
+                if (tableWrap) {
+                    var rows = (subjectData.class_stats || []).map(function(stat){
+                        return '<tr><td>'+stat.class_name+'</td><td>'+stat.total_students+'</td><td>'+stat.passed_count+'</td><td>'+stat.pass_rate+'</td></tr>';
+                    }).join('');
+                    tableWrap.innerHTML = '<table class="table table-striped table-bordered table-sm"><thead><tr><th>班级</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th></tr></thead><tbody>'+rows+'</tbody></table>';
+                }
+                if (container) {
+                    var existingChart = echarts.getInstanceByDom(container);
+                    if (existingChart) existingChart.dispose();
+                    createSubjectLineChart(u.chartId, subject, subjectData, lineName);
+                }
+            }
+
+            function fillSubjectLineButtons(uid) {
+                var u = window._subjectLinesUnified[uid];
+                if (!u) return;
+                var lineRadio = document.querySelector('input[name="subject_lines_line_u_' + uid + '"]:checked');
+                var lineName = lineRadio ? lineRadio.value : '特控线';
+                var subjList = lineName === '特控线' ? u.subjListT : u.subjListY;
+                var wrap = document.getElementById('subject_lines_subj_wrap_u_' + uid);
+                if (!wrap) return;
+                wrap.innerHTML = subjList.map(function(s, i){
+                    return '<input type="radio" class="btn-check" name="subject_lines_subj_u_' + uid + '" id="sl_subj_' + uid + '_' + s + '" value="'+s+'" ' + (i === 0 ? 'checked' : '') + '><label class="btn btn-outline-primary btn-sm" for="sl_subj_' + uid + '_' + s + '">'+s+'</label>';
+                }).join('');
+                wrap.querySelectorAll('input').forEach(function(radio){
+                    radio.addEventListener('change', function(){ if (this.checked) renderUnifiedSubjectLine(uid); });
+                });
+            }
+
+            setTimeout(function(){
+                fillSubjectLineButtons(ts);
+                renderUnifiedSubjectLine(ts);
+                document.querySelectorAll('input[name="subject_lines_line_u_' + ts + '"]').forEach(function(radio){
+                    radio.addEventListener('change', function(){
+                        fillSubjectLineButtons(ts);
+                        renderUnifiedSubjectLine(ts);
+                    });
+                });
+            }, 150);
+            return html;
+        }
+
+        // 创建班级各科情况：按学科分开展示，用选项卡切换（保留供单线调用，现主用 createUnifiedClassSubjectsSection）
         function createClassSubjectsTable(data, lineName, scoreLine) {
             const allClasses = Object.keys(data.classes).sort((a, b) => (isNaN(Number(a)) || isNaN(Number(b))) ? String(a).localeCompare(b) : Number(a) - Number(b));
             const allSubjects = sortSubjects(Object.keys(data.subject_lines || {}));
@@ -2574,91 +2829,75 @@
             return html;
         }
         
-        // 创建总分分析
+        // 创建总分分析（一个卡片，特控线/一段线按钮切换）
         function createTotalScoreAnalysis(data, tekongLine, yiduanLine) {
-            let html = `
-                <div class="card mb-3 result-section-card">
-                    <div class="card-header result-section-header result-section-header-secondary">
-                        <h5 class="mb-0">四、总分分析</h5>
-                    </div>
-                    <div class="card-body">
-            `;
-            
-            for (const [key, lineData] of Object.entries(data)) {
-                const lineName = lineData.score_line === tekongLine ? '特控线' : '一段线';
-                const totalChartId = `total_score_chart_${lineName}_${Date.now()}`;
-                html += `
-                    <div class="mb-4">
-                        <h6>${lineName} (${lineData.score_line}分)</h6>
-                        <div class="row mb-3">
-                            <div class="col-md-3">
-                                <div class="stat-card">
-                                    <h3>${lineData.passed_count}/${lineData.total_students}</h3>
-                                    <p>过线人数/总人数</p>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stat-card">
-                                    <h3>${lineData.pass_rate}%</h3>
-                                    <p>过线率</p>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stat-card">
-                                    <h3>${lineData.average_score}</h3>
-                                    <p>平均分</p>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stat-card">
-                                    <h3>${lineData.passed_avg_score}</h3>
-                                    <p>过线学生平均分</p>
-                                </div>
-                            </div>
-                        </div>
-                        ${lineData.class_stats && lineData.class_stats.length > 0 ? `
-                            <div class="table-responsive">
-                                <table class="table table-striped table-sm">
-                                    <thead>
-                                        <tr>
-                                            <th>班级</th>
-                                            <th>总人数</th>
-                                            <th>过线人数</th>
-                                            <th>过线率(%)</th>
-                                            <th>平均分</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${lineData.class_stats.map(stat => `
-                                            <tr>
-                                                <td>${stat.class_name}</td>
-                                                <td>${stat.total_students}</td>
-                                                <td>${stat.passed_count}</td>
-                                                <td>${stat.pass_rate}</td>
-                                                <td>${stat.average_score}</td>
-                                            </tr>
-                                        `).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div class="chart-container mt-3" id="${totalChartId}" style="height: 500px;"></div>
-                        ` : ''}
-                    </div>
-                `;
-                
-                // 渲染总分分析图表
-                if (lineData.class_stats && lineData.class_stats.length > 0) {
-                    setTimeout(() => {
-                        createTotalScoreChart(totalChartId, lineData, lineName);
-                    }, 150);
+            var ts = Date.now();
+            var chartId = 'total_score_chart_u_' + ts;
+            var statRowId = 'total_score_stat_u_' + ts;
+            var tableWrapId = 'total_score_table_u_' + ts;
+            var lineDataByKey = {};
+            if (data) {
+                for (var k in data) {
+                    var ld = data[k];
+                    if (ld && ld.score_line != null)
+                        lineDataByKey[ld.score_line === tekongLine ? '特控线' : '一段线'] = ld;
                 }
             }
-            
-            html += `
-                    </div>
-                </div>
-            `;
-            
+            var hasT = lineDataByKey['特控线'] && lineDataByKey['特控线'].total_students != null;
+            var hasY = lineDataByKey['一段线'] && lineDataByKey['一段线'].total_students != null;
+            var firstLine = hasT ? '特控线' : '一段线';
+
+            var html = '<div class="card mb-3 result-section-card">';
+            html += '<div class="card-header result-section-header result-section-header-secondary"><h5 class="mb-0">四、总分分析</h5></div>';
+            html += '<div class="card-body">';
+            html += '<p class="text-muted mb-2">选择分数线查看</p>';
+            html += '<div class="btn-group flex-wrap mb-3" role="group">';
+            if (hasT) html += '<input type="radio" class="btn-check" name="total_score_line_u_' + ts + '" id="ts_line_tekong_' + ts + '" value="特控线" ' + (firstLine === '特控线' ? 'checked' : '') + '><label class="btn btn-outline-danger btn-sm" for="ts_line_tekong_' + ts + '">特控线</label>';
+            if (hasY) html += '<input type="radio" class="btn-check" name="total_score_line_u_' + ts + '" id="ts_line_yiduan_' + ts + '" value="一段线" ' + (firstLine === '一段线' ? 'checked' : '') + '><label class="btn btn-outline-success btn-sm" for="ts_line_yiduan_' + ts + '">一段线</label>';
+            html += '</div>';
+            html += '<div id="' + statRowId + '" class="row mb-3"></div>';
+            html += '<div id="' + tableWrapId + '" class="table-responsive mb-3"></div>';
+            html += '<div class="chart-container" id="' + chartId + '" style="height:500px;"></div>';
+            html += '</div></div>';
+
+            window._totalScoreUnified = window._totalScoreUnified || {};
+            window._totalScoreUnified[ts] = { lineDataByKey: lineDataByKey, chartId: chartId, statRowId: statRowId, tableWrapId: tableWrapId };
+
+            function renderTotalScoreLine(uid) {
+                var u = window._totalScoreUnified[uid];
+                if (!u) return;
+                var lineRadio = document.querySelector('input[name="total_score_line_u_' + uid + '"]:checked');
+                var lineName = lineRadio ? lineRadio.value : '特控线';
+                var lineData = u.lineDataByKey[lineName];
+                if (!lineData) return;
+                var statRow = document.getElementById(u.statRowId);
+                var tableWrap = document.getElementById(u.tableWrapId);
+                var container = document.getElementById(u.chartId);
+                if (statRow) {
+                    statRow.innerHTML = '<div class="col-md-3"><div class="stat-card"><h3>' + lineData.passed_count + '/' + lineData.total_students + '</h3><p>过线人数/总人数</p></div></div>' +
+                        '<div class="col-md-3"><div class="stat-card"><h3>' + lineData.pass_rate + '%</h3><p>过线率</p></div></div>' +
+                        '<div class="col-md-3"><div class="stat-card"><h3>' + (lineData.average_score != null ? lineData.average_score : '-') + '</h3><p>平均分</p></div></div>' +
+                        '<div class="col-md-3"><div class="stat-card"><h3>' + (lineData.passed_avg_score != null ? lineData.passed_avg_score : '-') + '</h3><p>过线学生平均分</p></div></div>';
+                }
+                if (tableWrap && lineData.class_stats && lineData.class_stats.length > 0) {
+                    var rows = lineData.class_stats.map(function(stat) {
+                        return '<tr><td>' + stat.class_name + '</td><td>' + stat.total_students + '</td><td>' + stat.passed_count + '</td><td>' + stat.pass_rate + '</td><td>' + (stat.average_score != null ? stat.average_score : '-') + '</td></tr>';
+                    }).join('');
+                    tableWrap.innerHTML = '<table class="table table-striped table-sm"><thead><tr><th>班级</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th><th>平均分</th></tr></thead><tbody>' + rows + '</tbody></table>';
+                } else if (tableWrap) tableWrap.innerHTML = '';
+                if (container && lineData.class_stats && lineData.class_stats.length > 0) {
+                    var existingChart = echarts.getInstanceByDom(container);
+                    if (existingChart) existingChart.dispose();
+                    createTotalScoreChart(u.chartId, lineData, lineName);
+                }
+            }
+
+            setTimeout(function() {
+                renderTotalScoreLine(ts);
+                document.querySelectorAll('input[name="total_score_line_u_' + ts + '"]').forEach(function(radio) {
+                    radio.addEventListener('change', function() { if (this.checked) renderTotalScoreLine(ts); });
+                });
+            }, 150);
             return html;
         }
         
