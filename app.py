@@ -2,6 +2,7 @@
 成绩分析系统 - 独立Flask应用
 """
 import os
+import json
 import logging
 import pandas as pd
 from flask import Flask, render_template, request, jsonify
@@ -26,6 +27,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 # 配置上传文件夹
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+SNAPSHOT_FILE = os.path.join(UPLOAD_FOLDER, 'latest_snapshot.json')
 ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
 
 # 确保上传文件夹存在
@@ -88,6 +90,48 @@ def allowed_file(filename):
 def index():
     """主页"""
     return render_template('index.html')
+
+
+@app.route('/save_snapshot', methods=['POST'])
+def save_snapshot():
+    """保存当前分析结果为快照，供 /snap 只读查看"""
+    try:
+        data = request.get_json() or {}
+        snapshot = data.get('snapshot')
+        if not snapshot:
+            return jsonify({'success': False, 'message': '缺少快照数据'}), 400
+        with open(SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=None)
+        return jsonify({'success': True, 'url': '/snap', 'message': '快照已保存'})
+    except Exception as e:
+        logger.error(f"保存快照失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'保存失败: {str(e)}'}), 500
+
+
+@app.route('/snap')
+def snap():
+    """只读查看最新快照结果（其他老师可打开此链接查看）"""
+    try:
+        if not os.path.isfile(SNAPSHOT_FILE):
+            return (
+                '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>成绩分析快照</title>'
+                '<link href="/static/css/bootstrap.min.css" rel="stylesheet"></head><body class="p-5">'
+                '<div class="container"><h4>暂无快照</h4><p class="text-muted">主任尚未生成结果快照，请稍后再试。</p>'
+                '<a href="/" class="btn btn-primary">返回分析页</a></div></body></html>'
+            ), 200
+        with open(SNAPSHOT_FILE, 'r', encoding='utf-8') as f:
+            snapshot = json.load(f)
+        return render_template(
+            'index.html',
+            snapshot_mode=True,
+            snapshot=snapshot
+        )
+    except Exception as e:
+        logger.error(f"加载快照失败: {str(e)}", exc_info=True)
+        return (
+            '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>错误</title></head><body class="p-5">'
+            '<div class="container"><h4>加载快照失败</h4><p>' + str(e) + '</p><a href="/">返回</a></div></body></html>'
+        ), 200
 
 
 @app.route('/upload', methods=['POST'])
@@ -819,6 +863,110 @@ def export_excel():
                 subject_lines = export_data['subject_lines_yiduan']
                 for subject, subject_data in subject_lines.get('subjects', {}).items():
                     _write_subject_line_sheet_and_chart(writer, '一段线', subject, subject_data)
+
+            # 4b. 各校对比：总表、各学科平均分及排名、各学科特控线/一段线有效率（学校为列）
+            def _line_key(la, score):
+                if la is None or score is None or score == '':
+                    return None
+                try:
+                    n = float(score)
+                    for candidate in ('line_' + str(int(n)), 'line_' + str(n)):
+                        if la.get(candidate) is not None:
+                            return candidate
+                    return None
+                except (TypeError, ValueError):
+                    return None
+
+            league_analysis = export_data.get('league_analysis') or {}
+            league_tekong = export_data.get('league_tekong_line')
+            league_yiduan = export_data.get('league_yiduan_line')
+            if league_analysis and (league_tekong or league_yiduan):
+                key_tekong = _line_key(league_analysis, league_tekong)
+                key_yiduan = _line_key(league_analysis, league_yiduan)
+                data_tekong = league_analysis.get(key_tekong) if key_tekong else None
+                data_yiduan = league_analysis.get(key_yiduan) if key_yiduan else None
+                stats_tekong = (data_tekong or {}).get('school_stats') or []
+                stats_yiduan = (data_yiduan or {}).get('school_stats') or []
+                school_list = [s['school_name'] for s in stats_tekong] if stats_tekong else [s['school_name'] for s in stats_yiduan]
+                if school_list:
+                    by_school = {name: {} for name in school_list}
+                    for s in stats_tekong:
+                        if s['school_name'] not in by_school:
+                            continue
+                        by_school[s['school_name']].update({
+                            'ref_count': s.get('total_students'),
+                            'tekong_passed': s.get('passed_count'),
+                            'tekong_rate': s.get('pass_rate'),
+                            'tekong_rank': s.get('pass_rate_rank'),
+                            'avg_score': s.get('average_score'),
+                            'avg_rank': s.get('avg_score_rank'),
+                        })
+                    for s in stats_yiduan:
+                        if s['school_name'] not in by_school:
+                            continue
+                        by_school[s['school_name']].update({
+                            'yiduan_passed': s.get('passed_count'),
+                            'yiduan_rate': s.get('pass_rate'),
+                            'yiduan_rank': s.get('pass_rate_rank'),
+                        })
+                        if by_school[s['school_name']].get('ref_count') is None:
+                            by_school[s['school_name']]['ref_count'] = s.get('total_students')
+                            by_school[s['school_name']]['avg_score'] = s.get('average_score')
+                            by_school[s['school_name']]['avg_rank'] = s.get('avg_score_rank')
+
+                    # 总表：行=指标，列=学校
+                    total_rows = [
+                        ('参考人数', 'ref_count', None),
+                        ('特控上线人数', 'tekong_passed', None),
+                        ('特控率', 'tekong_rate', lambda v: str(v) + '%' if v is not None and v != '' else '-'),
+                        ('特控率排名', 'tekong_rank', None),
+                        ('一段上线人数', 'yiduan_passed', None),
+                        ('一段上线率', 'yiduan_rate', lambda v: str(v) + '%' if v is not None and v != '' else '-'),
+                        ('一段上线率排名', 'yiduan_rank', None),
+                        ('平均分', 'avg_score', None),
+                        ('平均分排名', 'avg_rank', None),
+                    ]
+                    total_data = []
+                    for label, key, fmt in total_rows:
+                        row = {'指标': label}
+                        for name in school_list:
+                            v = by_school.get(name, {}).get(key)
+                            if v is None or v == '':
+                                v = '-'
+                            row[name] = fmt(v) if fmt else v
+                        total_data.append(row)
+                    df_total = pd.DataFrame(total_data).set_index('指标')
+                    df_total.to_excel(writer, sheet_name='各校对比总表')
+
+                    # 各学科平均分及排名（来自特控线或一段线的 subject_rankings）
+                    subject_rankings = (data_tekong or data_yiduan or {}).get('subject_rankings') or {}
+                    if subject_rankings:
+                        subj_order = sort_subjects(list(subject_rankings.keys()))
+                        avg_rows = []
+                        for subj in subj_order:
+                            list_s = subject_rankings.get(subj) or []
+                            by_s = {x['school_name']: x for x in list_s}
+                            avg_rows.append({'学科': subj + ' 平均分', **{n: by_s.get(n, {}).get('average_score') or '-' for n in school_list}})
+                            avg_rows.append({'学科': subj + ' 名次', **{n: by_s.get(n, {}).get('rank') or '-' for n in school_list}})
+                        pd.DataFrame(avg_rows).set_index('学科').to_excel(writer, sheet_name='各学科平均分及排名')
+
+                    # 各学科特控线/一段线有效率（上线人数、上线率、排名）
+                    subject_line_rankings = league_analysis.get('subject_line_rankings') or {}
+                    for line_name, sheet_suffix in [('特控线', '各学科特控线有效率'), ('一段线', '各学科一段线有效率')]:
+                        line_data = subject_line_rankings.get(line_name) or {}
+                        if not line_data:
+                            continue
+                        subj_order = sort_subjects(list(line_data.keys()))
+                        line_rows = []
+                        for subj in subj_order:
+                            info = line_data.get(subj) or {}
+                            stats = info.get('school_stats') or []
+                            by_s = {s['school_name']: s for s in stats}
+                            line_rows.append({'学科': subj + ' 上线人数', **{n: by_s.get(n, {}).get('passed_count') or '-' for n in school_list}})
+                            line_rows.append({'学科': subj + ' 上线率', **{n: (str(by_s.get(n, {}).get('pass_rate')) + '%') if by_s.get(n, {}).get('pass_rate') is not None else '-' for n in school_list}})
+                            line_rows.append({'学科': subj + ' 排名', **{n: by_s.get(n, {}).get('rank') or '-' for n in school_list}})
+                        if line_rows:
+                            pd.DataFrame(line_rows).set_index('学科').to_excel(writer, sheet_name=sheet_suffix[:31])
 
             # 5. 校际各学科过线率汇总（按学校为行，学科为列），分别生成“特控线-校际学科汇总 / 一段线-校际学科汇总”
             league_subject_summary = export_data.get('league_subject_summary') or {}

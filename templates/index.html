@@ -138,10 +138,21 @@
         .result-section-header-secondary { background: linear-gradient(135deg, #6c757d 0%, #495057 100%); color: #fff; border-left-color: #343a40; }
         .result-section-header-danger { background: linear-gradient(135deg, #dc3545 0%, #b02a37 100%); color: #fff; border-left-color: #842029; }
         #resultsArea .card:first-of-type { margin-top: 0; }
+        .snapshot-view #uploadSection { display: none !important; }
     </style>
 </head>
-<body>
+<body class="{% if snapshot_mode %}snapshot-view{% endif %}">
+    {% if snapshot_mode and snapshot is defined and snapshot %}
+    <script>window.__SNAPSHOT__ = {{ snapshot | tojson }};</script>
+    {% endif %}
     <div class="container">
+        {% if snapshot_mode %}
+        <div class="alert alert-info mb-3 d-flex align-items-center">
+            <span>成绩分析结果快照 · 仅供查看</span>
+            <a href="/" class="btn btn-sm btn-outline-primary ms-3">返回分析页</a>
+        </div>
+        {% endif %}
+        <div id="uploadSection">
         <h1 class="mb-4">成绩分析系统</h1>
         
         <!-- 文件上传区域（仅联盟全体数据） -->
@@ -228,8 +239,11 @@
                 
                 <button type="button" class="btn btn-primary" id="analyzeBtn">开始分析</button>
                 <button type="button" class="btn btn-success ms-2" id="exportBtn" style="display: none;">导出Excel</button>
+                <button type="button" class="btn btn-info ms-2" id="snapshotBtn" style="display: none;">快照</button>
             </div>
         </div>
+        </div>
+        <!-- /uploadSection -->
         
         <!-- 分析结果区域（由 displayNewResults 动态填充：班级考核、班级各科情况、学科分数线、总分分析等） -->
         <div id="resultsArea" style="display: none;"></div>
@@ -772,8 +786,10 @@
                                  classSubjectsTekong, classSubjectsYiduan, classAssessment,
                                  excludedStudents, tekongLine, yiduanLine, leagueAnalysis);
                 
-                // 显示导出按钮
+                // 显示导出与快照按钮
                 document.getElementById('exportBtn').style.display = 'inline-block';
+                var snapBtn = document.getElementById('snapshotBtn');
+                if (snapBtn) snapBtn.style.display = 'inline-block';
                 
                 const resultsArea = document.getElementById('resultsArea');
                 if (resultsArea) {
@@ -1988,6 +2004,139 @@
             resultsArea.innerHTML = html;
         }
         
+        // 各校对比总表 + 各学科平均分/特控/一段表格（参考人数、特控率排名、一段率排名、平均分及学科明细）
+        function createLeagueSchoolComparisonTables(leagueAnalysis, tekongLine, yiduanLine, subjectLineRankings) {
+            const lineKey = function(score) {
+                if (score == null || score === '') return null;
+                const n = Number(score);
+                if (isNaN(n)) return null;
+                const k1 = 'line_' + n;
+                const k2 = (n === Math.floor(n)) ? ('line_' + n + '.0') : null;
+                return leagueAnalysis[k1] ? k1 : (k2 && leagueAnalysis[k2] ? k2 : null);
+            };
+            const keyTekong = lineKey(tekongLine);
+            const keyYiduan = lineKey(yiduanLine);
+            const dataTekong = keyTekong ? leagueAnalysis[keyTekong] : null;
+            const dataYiduan = keyYiduan ? leagueAnalysis[keyYiduan] : null;
+            if (!dataTekong && !dataYiduan) return '';
+            const statsTekong = (dataTekong && dataTekong.school_stats) ? dataTekong.school_stats : [];
+            const statsYiduan = (dataYiduan && dataYiduan.school_stats) ? dataYiduan.school_stats : [];
+            const schoolList = statsTekong.length ? statsTekong.map(s => s.school_name) : statsYiduan.map(s => s.school_name);
+            if (!schoolList.length) return '';
+
+            const bySchool = {};
+            schoolList.forEach(name => { bySchool[name] = {}; });
+            statsTekong.forEach(s => {
+                if (!bySchool[s.school_name]) return;
+                bySchool[s.school_name].ref_count = s.total_students;
+                bySchool[s.school_name].tekong_passed = s.passed_count;
+                bySchool[s.school_name].tekong_rate = s.pass_rate;
+                bySchool[s.school_name].tekong_rank = s.pass_rate_rank != null ? s.pass_rate_rank : '-';
+                bySchool[s.school_name].avg_score = s.average_score;
+                bySchool[s.school_name].avg_rank = s.avg_score_rank != null ? s.avg_score_rank : '-';
+            });
+            statsYiduan.forEach(s => {
+                if (!bySchool[s.school_name]) return;
+                bySchool[s.school_name].yiduan_passed = s.passed_count;
+                bySchool[s.school_name].yiduan_rate = s.pass_rate;
+                bySchool[s.school_name].yiduan_rank = s.pass_rate_rank != null ? s.pass_rate_rank : '-';
+                if (bySchool[s.school_name].ref_count == null) {
+                    bySchool[s.school_name].ref_count = s.total_students;
+                    bySchool[s.school_name].avg_score = s.average_score;
+                    bySchool[s.school_name].avg_rank = s.avg_score_rank != null ? s.avg_score_rank : '-';
+                }
+            });
+
+            let html = '<hr class="my-4"><h5 class="mb-3">各校对比总表</h5>';
+            html += '<div class="table-responsive mb-4 league-comparison-table-wrap"><table class="table table-bordered table-sm league-comparison-table"><thead><tr><th>指标</th>';
+            schoolList.forEach(s => { html += '<th>' + s + '</th>'; });
+            html += '</tr></thead><tbody>';
+            const row = (label, key, fmt) => {
+                let r = '<tr><td class="text-nowrap">' + label + '</td>';
+                schoolList.forEach(name => {
+                    const v = bySchool[name] && bySchool[name][key] != null ? bySchool[name][key] : '-';
+                    r += '<td>' + (typeof fmt === 'function' ? fmt(v) : v) + '</td>';
+                });
+                return r + '</tr>';
+            };
+            html += row('参考人数', 'ref_count');
+            html += row('特控上线人数', 'tekong_passed');
+            html += row('特控率', 'tekong_rate', v => (typeof v === 'number' ? v + '%' : v));
+            html += row('特控率排名', 'tekong_rank');
+            html += row('一段上线人数', 'yiduan_passed');
+            html += row('一段上线率', 'yiduan_rate', v => (typeof v === 'number' ? v + '%' : v));
+            html += row('一段上线率排名', 'yiduan_rank');
+            html += row('平均分', 'avg_score');
+            html += row('平均分排名', 'avg_rank');
+            html += '</tbody></table></div>';
+
+            const subjectRankings = (dataTekong && dataTekong.subject_rankings) ? dataTekong.subject_rankings : {};
+            const subjectsWithRank = sortSubjects(Object.keys(subjectRankings));
+            if (subjectsWithRank.length > 0) {
+                html += '<h5 class="mb-3">各学科平均分及平均分排名</h5><div class="table-responsive mb-4"><table class="table table-bordered table-sm league-comparison-table"><thead><tr><th>学科</th>';
+                schoolList.forEach(s => { html += '<th>' + s + '</th>'; });
+                html += '</tr></thead><tbody>';
+                subjectsWithRank.forEach(subj => {
+                    const list = subjectRankings[subj] || [];
+                    const bySchoolSubj = {};
+                    list.forEach(x => { bySchoolSubj[x.school_name] = { avg: x.average_score, rank: x.rank }; });
+                    html += '<tr><td class="text-nowrap">' + subj + ' 平均分</td>';
+                    schoolList.forEach(name => {
+                        const o = bySchoolSubj[name];
+                        html += '<td>' + (o ? o.avg : '-') + '</td>';
+                    });
+                    html += '</tr><tr><td class="text-nowrap">' + subj + ' 名次</td>';
+                    schoolList.forEach(name => {
+                        const o = bySchoolSubj[name];
+                        html += '<td>' + (o ? o.rank : '-') + '</td>';
+                    });
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+
+            const renderSubjectLineTable = (lineName, lineData) => {
+                if (!lineData || Object.keys(lineData).length === 0) return '';
+                const allSubjects = sortSubjects(Object.keys(lineData));
+                let t = '<h5 class="mb-3">各学科' + lineName + '有效率</h5><div class="table-responsive mb-4"><table class="table table-bordered table-sm league-comparison-table"><thead><tr><th>学科</th>';
+                schoolList.forEach(s => { t += '<th>' + s + '</th>'; });
+                t += '</tr></thead><tbody>';
+                allSubjects.forEach(subj => {
+                    const info = lineData[subj];
+                    const stats = (info && info.school_stats) || [];
+                    const bySchoolSubj = {};
+                    stats.forEach(x => {
+                        bySchoolSubj[x.school_name] = { passed: x.passed_count, rate: x.pass_rate, rank: x.rank != null ? x.rank : '-' };
+                    });
+                    t += '<tr><td class="text-nowrap">' + subj + ' 上线人数</td>';
+                    schoolList.forEach(name => {
+                        const o = bySchoolSubj[name];
+                        t += '<td>' + (o ? o.passed : '-') + '</td>';
+                    });
+                    t += '</tr><tr><td class="text-nowrap">' + subj + ' 上线率</td>';
+                    schoolList.forEach(name => {
+                        const o = bySchoolSubj[name];
+                        t += '<td>' + (o ? (typeof o.rate === 'number' ? o.rate + '%' : o.rate) : '-') + '</td>';
+                    });
+                    t += '</tr><tr><td class="text-nowrap">' + subj + ' 排名</td>';
+                    schoolList.forEach(name => {
+                        const o = bySchoolSubj[name];
+                        t += '<td>' + (o ? o.rank : '-') + '</td>';
+                    });
+                    t += '</tr>';
+                });
+                t += '</tbody></table></div>';
+                return t;
+            };
+            if (subjectLineRankings['特控线']) {
+                html += renderSubjectLineTable('特控线', subjectLineRankings['特控线']);
+            }
+            if (subjectLineRankings['一段线']) {
+                html += renderSubjectLineTable('一段线', subjectLineRankings['一段线']);
+            }
+            return html;
+        }
+
         // 我校与各校对比区块（联盟数据）
         function createLeagueComparisonSection(leagueAnalysis, tekongLine, yiduanLine) {
             const scoreToName = {};
@@ -2064,34 +2213,12 @@
                     </div>
                 `;
             }
+            // 各校对比总表 + 各学科平均分/特控/一段（表格形式，可导出）
+            html += createLeagueSchoolComparisonTables(leagueAnalysis, tekongLine, yiduanLine, subjectLineRankings);
             // 学科过线率排名（各校）：仅当用户设置了学科线时展示
             if (Object.keys(subjectLineRankings).length > 0) {
-                // 1) 按学科逐科查看（原有的小表）
-                html += '<hr class="my-4"><h5 class="mb-3">各学科过线率排名（各校）</h5>';
-                for (const [lineName, subjects] of Object.entries(subjectLineRankings)) {
-                    if (!subjects || Object.keys(subjects).length === 0) continue;
-                    const lineColor = lineName === '特控线' ? 'danger' : 'success';
-                    html += `<div class="mb-4"><h6 class="text-${lineColor}">${lineName}</h6>`;
-                    for (const [subject, info] of Object.entries(subjects)) {
-                        if (!info || info.school_stats == null) continue;
-                        html += `
-                        <div class="mb-3">
-                            <p class="mb-1"><strong>${subject}</strong>（学科线 ${info.score_line} 分）
-                                ${info.my_school_rank != null ? ` · 我校排名：<strong>第 ${info.my_school_rank} 名</strong>` : ''}
-                                ${info.my_pass_rate != null ? ` · 我校过线率：<strong>${info.my_pass_rate}%</strong>（${info.my_passed_count || 0}/${info.my_total || 0}）` : ''}
-                            </p>
-                            <div class="table-responsive">
-                                <table class="table table-striped table-sm table-bordered">
-                                    <thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th></tr></thead>
-                                    <tbody>
-                                        ${(info.school_stats || []).slice(0, 10).map((s, i) => '<tr><td>' + (i+1) + '</td><td>' + s.school_name + '</td><td>' + s.total_students + '</td><td>' + s.passed_count + '</td><td><strong>' + s.pass_rate + '%</strong></td></tr>').join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>`;
-                    }
-                    html += '</div>';
-                }
+                // 1) 各学科过线率对比图（各校），风格类似“班级各科过线情况”
+                html += createLeagueSubjectCharts(subjectLineRankings);
 
                 // 2) 校际各学科过线率汇总表：按“学校”为行，“学科”为列，便于校际横向比较
                 html += '<hr class="my-4"><h5 class="mb-3">校际各学科过线率汇总</h5>';
@@ -2140,6 +2267,113 @@
             }
             html += '</div></div>';
             return html;
+        }
+
+        // 校际各学科过线率对比图（按学校），结构类似“班级各科过线情况”
+        function createLeagueSubjectCharts(subjectLineRankings) {
+            let html = '<hr class="my-4"><h5 class="mb-3">各学科过线率对比图（各校）</h5>';
+            window._leagueSubjectsData = window._leagueSubjectsData || {};
+
+            for (const [lineName, subjects] of Object.entries(subjectLineRankings)) {
+                if (!subjects || Object.keys(subjects).length === 0) continue;
+                const allSubjects = sortSubjects(Object.keys(subjects));
+                if (allSubjects.length === 0) continue;
+                const firstSubject = allSubjects[0];
+                const chartId = `league_subject_chart_${lineName}_${Date.now()}_${Math.floor(Math.random()*1000)}`;
+                const tableId = chartId + '_table';
+
+                html += `
+                    <div class="card mb-3 result-section-card">
+                        <div class="card-header result-section-header result-section-header-league">
+                            <h5 class="mb-0">${lineName} - 校际各学科过线率对比</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted mb-2">点击学科按钮，查看不同学校在该学科上的过线率。</p>
+                            <div class="btn-group flex-wrap mb-3" role="group">
+                                ${allSubjects.map(s => `
+                                    <input type="radio" class="btn-check" name="${chartId}_subj" id="${chartId}_btn_${s}" value="${s}" ${s === firstSubject ? 'checked' : ''}>
+                                    <label class="btn btn-outline-primary btn-sm class-subject-tab" for="${chartId}_btn_${s}">${s}</label>
+                                `).join('')}
+                            </div>
+                            <div class="chart-container" id="${chartId}" style="height: 380px;"></div>
+                            <div id="${tableId}" class="table-responsive mt-3"></div>
+                        </div>
+                    </div>
+                `;
+
+                window._leagueSubjectsData[chartId] = { lineName, subjects, allSubjects };
+
+                setTimeout(() => {
+                    renderLeagueSubjectView(chartId, firstSubject);
+                    document.querySelectorAll(\`input[name=\"${chartId}_subj\"]\`).forEach(radio => {
+                        radio.addEventListener('change', function() {
+                            if (this.checked) renderLeagueSubjectView(chartId, this.value);
+                        });
+                    });
+                }, 100);
+            }
+
+            return html;
+        }
+
+        // 渲染某一学科在各校的过线率柱状图 + 表格
+        function renderLeagueSubjectView(chartId, subject) {
+            const stored = window._leagueSubjectsData && window._leagueSubjectsData[chartId];
+            if (!stored) return;
+            const { lineName, subjects } = stored;
+            const info = subjects[subject];
+            if (!info || !info.school_stats) return;
+
+            const stats = (info.school_stats || []).slice().sort((a, b) => (b.pass_rate || 0) - (a.pass_rate || 0));
+            const schools = stats.map(s => s.school_name);
+            const passRates = stats.map(s => s.pass_rate);
+            const totals = stats.map(s => s.total_students);
+
+            const container = document.getElementById(chartId);
+            const tableContainer = document.getElementById(chartId + '_table');
+            if (!container) return;
+
+            const existingChart = echarts.getInstanceByDom(container);
+            if (existingChart) existingChart.dispose();
+
+            const chart = echarts.init(container);
+            chart.setOption({
+                title: { text: `${lineName} - ${subject} 各校过线率`, left: 'center' },
+                tooltip: {
+                    trigger: 'axis',
+                    formatter: function(params) {
+                        const i = params[0].dataIndex;
+                        return schools[i] + '<br/>过线率: ' + passRates[i] + '%<br/>总人数: ' + totals[i];
+                    }
+                },
+                xAxis: {
+                    type: 'category',
+                    name: '学校',
+                    data: schools,
+                    axisLabel: { rotate: 45, interval: 0 }
+                },
+                yAxis: { type: 'value', name: '过线率(%)', max: 100 },
+                series: [{
+                    name: '过线率(%)',
+                    type: 'bar',
+                    data: passRates,
+                    itemStyle: {
+                        color: function(p) { return p.dataIndex < 3 ? '#ff6b6b' : '#4ecdc4'; }
+                    }
+                }]
+            });
+            setTimeout(() => chart.resize(), 80);
+
+            if (tableContainer) {
+                tableContainer.innerHTML = \`
+                    <table class="table table-striped table-bordered table-sm mb-0">
+                        <thead><tr><th>排名</th><th>学校</th><th>总人数</th><th>过线人数</th><th>过线率(%)</th></tr></thead>
+                        <tbody>
+                            \${stats.map((s, i) => \`<tr><td>\${i+1}</td><td>\${s.school_name}</td><td>\${s.total_students}</td><td>\${s.passed_count}</td><td><strong>\${s.pass_rate}%</strong></td></tr>\`).join('')}
+                        </tbody>
+                    </table>
+                \`;
+            }
         }
         
         // 创建班级各科情况：按学科分开展示，用选项卡切换
@@ -2717,6 +2951,51 @@
             setTimeout(() => chart.resize(), 50);
         }
         
+        // 快照：保存当前结果到服务器，其他老师可访问 /snap 查看
+        document.getElementById('snapshotBtn').addEventListener('click', async function() {
+            if (!analysisResults || Object.keys(analysisResults).length === 0) {
+                alert('没有可保存的结果，请先进行分析');
+                return;
+            }
+            var tekongEl = document.getElementById('tekongLine');
+            var yiduanEl = document.getElementById('yiduanLine');
+            var snapshot = {
+                schoolTotalAnalysis: analysisResults.schoolTotal || null,
+                subjectLinesTekong: analysisResults.subjectLinesTekong || null,
+                subjectLinesYiduan: analysisResults.subjectLinesYiduan || null,
+                classSubjectsTekong: analysisResults.classSubjectsTekong || null,
+                classSubjectsYiduan: analysisResults.classSubjectsYiduan || null,
+                classAssessment: analysisResults.classAssessment || null,
+                excludedStudents: analysisResults.excludedStudents || null,
+                tekongLine: tekongEl ? tekongEl.value : null,
+                yiduanLine: yiduanEl ? yiduanEl.value : null,
+                leagueAnalysis: analysisResults.leagueAnalysis || null
+            };
+            try {
+                var r = await fetch('/save_snapshot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ snapshot: snapshot })
+                });
+                var data = await r.json();
+                if (data.success) {
+                    var url = window.location.origin + '/snap';
+                    alert('快照已保存。其他老师可打开以下链接查看结果：\n' + url);
+                    if (window.navigator.clipboard && window.navigator.clipboard.writeText) {
+                        try {
+                            await window.navigator.clipboard.writeText(url);
+                            console.log('已复制链接到剪贴板');
+                        } catch (e) {}
+                    }
+                } else {
+                    alert('保存快照失败：' + (data.message || '未知错误'));
+                }
+            } catch (err) {
+                console.error('快照保存失败:', err);
+                alert('保存快照失败：' + err.message);
+            }
+        });
+
         // 导出Excel
         document.getElementById('exportBtn').addEventListener('click', async function() {
             if (!analysisResults || Object.keys(analysisResults).length === 0) {
@@ -2736,7 +3015,11 @@
                             subject_lines_tekong: analysisResults.subjectLinesTekong || {},
                             subject_lines_yiduan: analysisResults.subjectLinesYiduan || {},
                             // 校际各学科汇总（特控线 / 一段线），来自联盟分析结果
-                            league_subject_summary: (analysisResults.leagueAnalysis && analysisResults.leagueAnalysis.subject_line_rankings) || {}
+                            league_subject_summary: (analysisResults.leagueAnalysis && analysisResults.leagueAnalysis.subject_line_rankings) || {},
+                            // 各校对比总表及学科表导出：联盟分析 + 特控/一段分数线（导出时从表单读取）
+                            league_analysis: analysisResults.leagueAnalysis || {},
+                            league_tekong_line: document.getElementById('tekongLine') && document.getElementById('tekongLine').value ? document.getElementById('tekongLine').value : null,
+                            league_yiduan_line: document.getElementById('yiduanLine') && document.getElementById('yiduanLine').value ? document.getElementById('yiduanLine').value : null
                         }
                     })
                 });
@@ -2760,6 +3043,25 @@
                 alert('导出失败: ' + error.message);
             }
         });
+        
+        // 快照模式：用服务端注入的数据渲染结果
+        if (window.__SNAPSHOT__ && typeof displayNewResults === 'function') {
+            var s = window.__SNAPSHOT__;
+            displayNewResults(
+                s.schoolTotalAnalysis || null,
+                s.subjectLinesTekong || null,
+                s.subjectLinesYiduan || null,
+                s.classSubjectsTekong || null,
+                s.classSubjectsYiduan || null,
+                s.classAssessment || null,
+                s.excludedStudents || null,
+                s.tekongLine != null ? s.tekongLine : null,
+                s.yiduanLine != null ? s.yiduanLine : null,
+                s.leagueAnalysis || null
+            );
+            var resArea = document.getElementById('resultsArea');
+            if (resArea) resArea.style.display = 'block';
+        }
         
         }); // DOMContentLoaded 结束
     </script>

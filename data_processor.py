@@ -903,7 +903,15 @@ def analyze_league_scores(league_df: pd.DataFrame, school_names, score_lines: Li
                     'average_score': round(float(school_data['总分'].mean()), 2) if len(school_data) > 0 else 0
                 })
             
-            # 按过线率排序
+            # 按过线率排序并写入排名
+            school_stats.sort(key=lambda x: x['pass_rate'], reverse=True)
+            for idx, s in enumerate(school_stats, 1):
+                s['pass_rate_rank'] = idx
+            # 按平均分排序并写入平均分排名
+            school_stats.sort(key=lambda x: x['average_score'], reverse=True)
+            for idx, s in enumerate(school_stats, 1):
+                s['avg_score_rank'] = idx
+            # 恢复按过线率排序（与原有展示一致）
             school_stats.sort(key=lambda x: x['pass_rate'], reverse=True)
         
         # 我校过线情况
@@ -1060,7 +1068,8 @@ def analyze_league_subject_lines(
                     'school_name': str(row['学校']),
                     'total_students': int(row['total']),
                     'passed_count': int(row['passed']),
-                    'pass_rate': round(float(row['pass_rate']), 2)
+                    'pass_rate': round(float(row['pass_rate']), 2),
+                    'rank': int(row['rank'])
                 }
                 for _, row in by_school.iterrows()
             ]
