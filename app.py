@@ -146,8 +146,9 @@ def upload_files():
         league_file.save(league_path)
         result = {'success': True, 'message': '文件上传成功', 'league_path': league_path}
         try:
-            df = pd.read_excel(league_path, sheet_name='分数', nrows=0)
-            raw_columns = list(df.columns) if not df.empty else []
+            # 使用与分析阶段一致的安全读取逻辑，避免 Excel AutoFilter 异常导致上传即失败
+            df_full = read_league_data(league_path)
+            raw_columns = list(df_full.columns) if df_full is not None else []
             result['league_columns'] = [str(c).strip() for c in raw_columns]
             # 仅返回白名单学科（与 data_processor 一致，排除考号、7选3、联盟排名、门数等）
             raw_str = [str(c).strip() for c in raw_columns]

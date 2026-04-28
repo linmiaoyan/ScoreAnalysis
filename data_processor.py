@@ -6,6 +6,10 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 import logging
+import os
+import tempfile
+import zipfile
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -404,8 +408,121 @@ def read_league_data(file_path: str) -> pd.DataFrame:
         包含学校、姓名、班级和各科成绩的DataFrame
     """
     try:
-        # 读取"分数"标签页
-        df = pd.read_excel(file_path, sheet_name='分数')
+        def _strip_autofilter_from_xlsx_sheet(path: str, target_sheet_name: str) -> str:
+            """
+            将 xlsx 当作 zip 处理，定位到指定 sheet 的 XML，移除 <autoFilter> 节点并保存为临时文件。
+            返回临时文件路径（调用方负责删除）。
+
+            这样可以绕过 openpyxl 在解析不规范筛选条件时抛出的异常。
+            """
+            tmp_path = None
+            with tempfile.NamedTemporaryFile(prefix="league_sanitized_", suffix=".xlsx", delete=False) as tf:
+                tmp_path = tf.name
+
+            try:
+                with zipfile.ZipFile(path, 'r') as zin:
+                    workbook_xml = zin.read('xl/workbook.xml')
+                    rels_xml = zin.read('xl/_rels/workbook.xml.rels')
+
+                    wb_root = ET.fromstring(workbook_xml)
+                    rels_root = ET.fromstring(rels_xml)
+
+                    # workbook.xml 中 sheets 节点（包含 name 与 r:id）
+                    sheet_rid = None
+                    for el in wb_root.iter():
+                        if el.tag.endswith('sheet') and el.attrib.get('name') == target_sheet_name:
+                            sheet_rid = el.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+                            break
+                    if not sheet_rid:
+                        # 找不到目标工作表则直接原样复制（让上层继续抛出/处理）
+                        raise KeyError(f"工作簿中未找到工作表: {target_sheet_name}")
+
+                    # workbook.xml.rels 中找到对应 Target（例如 worksheets/sheet1.xml）
+                    sheet_target = None
+                    for rel in rels_root.iter():
+                        if rel.tag.endswith('Relationship') and rel.attrib.get('Id') == sheet_rid:
+                            sheet_target = rel.attrib.get('Target')
+                            break
+                    if not sheet_target:
+                        raise KeyError(f"未找到工作表关系: {sheet_rid}")
+
+                    # 目标路径一般是 worksheets/sheetN.xml
+                    sheet_path_in_zip = 'xl/' + sheet_target.lstrip('/')
+
+                    sheet_xml = zin.read(sheet_path_in_zip)
+                    sheet_root = ET.fromstring(sheet_xml)
+
+                    removed = 0
+                    for parent in sheet_root.iter():
+                        for child in list(parent):
+                            if child.tag.endswith('autoFilter'):
+                                parent.remove(child)
+                                removed += 1
+
+                    if removed == 0:
+                        # 没有 autoFilter 也照样写出副本，保持逻辑简单
+                        logger.info("read_league_data: 未在工作表中发现 autoFilter 节点")
+                    else:
+                        logger.warning(f"read_league_data: 已移除 {removed} 个 autoFilter 节点，准备重试读取")
+
+                    new_sheet_xml = ET.tostring(sheet_root, encoding='utf-8', xml_declaration=True)
+
+                    # 写出新的 xlsx：除目标 sheet xml 外，其余文件原样拷贝
+                    with zipfile.ZipFile(tmp_path, 'w', compression=zipfile.ZIP_DEFLATED) as zout:
+                        for item in zin.infolist():
+                            data = zin.read(item.filename)
+                            if item.filename == sheet_path_in_zip:
+                                data = new_sheet_xml
+                            zout.writestr(item, data)
+
+                return tmp_path
+            except Exception:
+                # 若失败则删除临时文件，避免泄漏
+                if tmp_path and os.path.isfile(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                raise
+
+        def _read_excel_scores(path: str) -> pd.DataFrame:
+            return pd.read_excel(path, sheet_name='分数')
+
+        def _read_excel_scores_with_autofilter_stripped(path: str) -> pd.DataFrame:
+            """
+            兜底读取：部分联盟 Excel 文件带有不规范 AutoFilter 条件，openpyxl 解析会抛:
+            ValueError: Value must be either numerical or a string containing a wildcard
+
+            此处通过「直接修改 xlsx 内部工作表 XML 移除 autoFilter」的方式生成临时文件，再交给 pandas 读取，
+            从而绕过 openpyxl 解析筛选器时的异常。
+            """
+            tmp_path = None
+            try:
+                tmp_path = _strip_autofilter_from_xlsx_sheet(path, '分数')
+                return _read_excel_scores(tmp_path)
+            finally:
+                if tmp_path and os.path.isfile(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+
+        # 读取"分数"标签页（先尝试正常读取，失败则清理 AutoFilter 重试）
+        try:
+            df = _read_excel_scores(file_path)
+        except ValueError as e:
+            msg = str(e)
+            if "wildcard" in msg or "Value must be either numerical" in msg:
+                logger.warning(f"read_league_data: 检测到 Excel AutoFilter 异常，尝试清理筛选后重读: {msg}")
+                df = _read_excel_scores_with_autofilter_stripped(file_path)
+            else:
+                raise
+        except Exception:
+            # 兼容 openpyxl 在解析筛选器时抛出的其他异常形态
+            try:
+                df = _read_excel_scores_with_autofilter_stripped(file_path)
+            except Exception:
+                raise
         
         # 处理MultiIndex列名：如果是MultiIndex，取最后一级
         if isinstance(df.columns, pd.MultiIndex):
