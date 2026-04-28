@@ -255,6 +255,7 @@ def analyze_league():
         school_names = _parse_school_names(data)
         score_lines = data.get('score_lines', [])
         subject_lines = data.get('subject_lines') or {}  # {"特控线": {"语文": 100}, "一段线": {"数学": 90}}
+        excluded_names = data.get('excluded_names') or []
         if not league_path:
             return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
         if not score_lines:
@@ -266,13 +267,15 @@ def analyze_league():
         league_df = read_league_data(league_path)
         league_analysis = analyze_league_scores(
             league_df, school_names, score_lines,
-            display_name=school_names[0] if school_names else None
+            display_name=school_names[0] if school_names else None,
+            excluded_names=excluded_names
         )
         # 若设置了学科分数线，计算各校各学科过线率及我校排名
         if subject_lines and school_names:
             try:
                 subject_line_rankings = analyze_league_subject_lines(
-                    league_df, school_names, subject_lines
+                    league_df, school_names, subject_lines,
+                    excluded_names=excluded_names
                 )
                 if subject_line_rankings:
                     league_analysis['subject_line_rankings'] = subject_line_rankings
@@ -375,6 +378,7 @@ def analyze_school_total():
         league_path = data.get('league_path')
         school_names = _parse_school_names(data)
         score_lines = data.get('score_lines', [])
+        excluded_names = data.get('excluded_names') or []
         
         if not league_path:
             return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
@@ -400,7 +404,7 @@ def analyze_school_total():
         logger.info(f"读取我校数据，学科数量: {len(school_data)}, 学科列表: {list(school_data.keys())}")
         
         # 分析总分和分数线
-        analysis_result = analyze_school_total_score(school_data, score_lines)
+        analysis_result = analyze_school_total_score(school_data, score_lines, excluded_names=excluded_names)
         logger.info(f"我校总分分析完成，分数线数量: {len(analysis_result)}")
         
         result = {
@@ -582,6 +586,7 @@ def calculate_class_assessment_endpoint():
         school_names = _parse_school_names(data)
         tekong_line = data.get('tekong_line')
         yiduan_line = data.get('yiduan_line')
+        excluded_names = data.get('excluded_names') or []
         
         if not league_path:
             return jsonify({'success': False, 'message': '请先上传【联盟全体数据】文件'}), 400
@@ -600,7 +605,7 @@ def calculate_class_assessment_endpoint():
             return jsonify({'success': False, 'message': str(ve)}), 400
         
         # 计算班级考核分
-        result = calculate_class_assessment(school_data, float(tekong_line), float(yiduan_line))
+        result = calculate_class_assessment(school_data, float(tekong_line), float(yiduan_line), excluded_names=excluded_names)
         
         return jsonify({'success': True, 'results': result})
         

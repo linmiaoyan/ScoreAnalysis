@@ -235,6 +235,12 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="mb-3">
+                    <label class="form-label">剔除特定学生（可选）</label>
+                    <textarea class="form-control" id="excludedNames" rows="3" placeholder="一行一个姓名，例如：&#10;张三&#10;李四"></textarea>
+                    <small class="form-text text-muted d-block mt-1">这些学生将不计入：联盟对比统计、学科有效率、我校总分统计、班级考核分等结果。</small>
+                </div>
                 
                 <button type="button" class="btn btn-primary" id="analyzeBtn">开始分析</button>
                 <button type="button" class="btn btn-success ms-2" id="exportBtn" style="display: none;">导出Excel</button>
@@ -587,6 +593,7 @@
         document.getElementById('analyzeBtn').addEventListener('click', async function() {
             const yiduanLine = parseFloat(document.getElementById('yiduanLine').value);
             const tekongLine = parseFloat(document.getElementById('tekongLine').value);
+            const excludedNames = getExcludedNames();
             
             if (isNaN(yiduanLine) || isNaN(tekongLine) || yiduanLine <= 0 || tekongLine <= 0) {
                 alert('请设置一段线和特控线');
@@ -612,6 +619,7 @@
             
             try {
                 analysisResults = {};
+                analysisResults.excludedNames = excludedNames || [];
                 
                 // 1. 总分分析
                 const scoreLines = [tekongLine, yiduanLine];
@@ -624,7 +632,8 @@
                             school_path: uploadedFiles.school_path,
                             league_path: uploadedFiles.league_path,
                             school_names: schoolNames,
-                            score_lines: scoreLines
+                            score_lines: scoreLines,
+                            excluded_names: excludedNames
                         })
                     });
                     const totalResult = await totalResponse.json();
@@ -742,7 +751,8 @@
                             league_path: uploadedFiles.league_path,
                             school_names: schoolNames,
                             tekong_line: tekongLine,
-                            yiduan_line: yiduanLine
+                            yiduan_line: yiduanLine,
+                            excluded_names: excludedNames
                         })
                     });
                     const result = await response.json();
@@ -766,7 +776,8 @@
                             league_path: uploadedFiles.league_path,
                             school_names: schoolNames,
                             score_lines: [tekongLine, yiduanLine],
-                            subject_lines: subjectLines && Object.keys(subjectLines).length > 0 ? subjectLines : undefined
+                            subject_lines: subjectLines && Object.keys(subjectLines).length > 0 ? subjectLines : undefined,
+                            excluded_names: excludedNames
                         })
                     });
                     const leagueData = await leagueRes.json();
@@ -803,6 +814,21 @@
                 this.textContent = '开始分析';
             }
         });
+
+        function getExcludedNames() {
+            try {
+                var el = document.getElementById('excludedNames');
+                if (!el) return [];
+                var raw = String(el.value || '');
+                return raw
+                    .split(/\r?\n/g)
+                    .map(s => String(s || '').trim())
+                    .filter(s => s && s.toLowerCase() !== 'nan');
+            } catch (e) {
+                console.warn('读取剔除名单失败:', e);
+                return [];
+            }
+        }
         
         // 清空之前的结果
         function clearPreviousResults() {
@@ -3206,6 +3232,7 @@
                 classSubjectsYiduan: analysisResults.classSubjectsYiduan || null,
                 classAssessment: analysisResults.classAssessment || null,
                 excludedStudents: analysisResults.excludedStudents || null,
+                excludedNames: analysisResults.excludedNames || null,
                 tekongLine: tekongEl ? tekongEl.value : null,
                 yiduanLine: yiduanEl ? yiduanEl.value : null,
                 leagueAnalysis: analysisResults.leagueAnalysis || null
@@ -3286,6 +3313,13 @@
         // 快照模式：用服务端注入的数据渲染结果
         if (window.__SNAPSHOT__ && typeof displayNewResults === 'function') {
             var s = window.__SNAPSHOT__;
+            // 尝试回填剔除名单输入框（只读快照也方便查看口径）
+            try {
+                var exEl = document.getElementById('excludedNames');
+                if (exEl && s.excludedNames && Array.isArray(s.excludedNames)) {
+                    exEl.value = s.excludedNames.join('\n');
+                }
+            } catch (e) {}
             displayNewResults(
                 s.schoolTotalAnalysis || null,
                 s.subjectLinesTekong || null,
