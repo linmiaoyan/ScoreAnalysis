@@ -2,6 +2,7 @@
 成绩数据处理器
 处理Excel文件的读取和数据提取
 """
+import re
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -22,6 +23,86 @@ SUBJECT_COLUMNS = [
 SUBJECT_ORDER = ['语文', '数学', '英语', '日语', '物理', '化学', '生物', '政治', '历史', '地理', '技术']
 # 英语与日语为并列外语，计分时只取一科（有英语用英语，否则用日语）
 FOREIGN_LANG_SUBJECTS = ('英语', '日语')
+
+
+def _squish_whitespace(text: str) -> str:
+    """用于表头识别：去掉首尾空格并合并中间空白。"""
+    return re.sub(r'\s+', '', str(text).strip()) if text is not None else ''
+
+
+_LEAGUE_BASE_HEADER_ALIASES = {
+    '学校全称': '学校',
+    '学校名称': '学校',
+    '就读学校': '学校',
+    '在读学校': '学校',
+    '考生姓名': '姓名',
+    '学生姓名': '姓名',
+    '姓名全称': '姓名',
+    '班': '班级',
+    '班次': '班级',
+    '教学班': '班级',
+}
+# 单列名即等于学科时的映射（squish 后）
+_LEAGUE_SUBJECT_ALIASES = {
+    '信息技术': '技术',
+    '通用技术': '技术',
+    '信息与技术': '技术',
+    '技术通用': '技术',
+}
+
+
+def _map_league_header_to_canonical(raw_stripped: str) -> Optional[str]:
+    """若表头是已知别名/exact学科名则返回规范名；否则返回 None。"""
+    if not raw_stripped:
+        return None
+    sq = _squish_whitespace(raw_stripped)
+    if sq in _LEAGUE_BASE_HEADER_ALIASES:
+        return _LEAGUE_BASE_HEADER_ALIASES[sq]
+    if sq in SUBJECT_COLUMNS:
+        return sq
+    if sq in _LEAGUE_SUBJECT_ALIASES:
+        return _LEAGUE_SUBJECT_ALIASES[sq]
+    return None
+
+
+def _normalize_league_column_series(columns) -> List[str]:
+    """
+    先将列名 strip，再根据别名映射到「学校/姓名/班级/学科」；避免误把「政治面貌」等非学科列并入「政治」。
+    """
+    stripped = [str(c).strip() if c is not None else '' for c in columns]
+    out = []
+    used_base = {'学校': False, '姓名': False, '班级': False}
+    used_subjects: set = set()
+
+    for raw in stripped:
+        canon = _map_league_header_to_canonical(raw)
+        if canon is None:
+            out.append(raw)
+            continue
+
+        if canon in ('学校', '姓名', '班级'):
+            if used_base.get(canon):
+                logger.warning(f'联盟数据表头：重复的基础列映射到「{canon}」（列名「{raw}」保留原名以避免覆盖）')
+                out.append(raw)
+                continue
+            used_base[canon] = True
+
+        elif canon in SUBJECT_COLUMNS:
+            if canon in used_subjects:
+                logger.warning(
+                    f'联盟数据表头：重复学科列「{canon}」：列「{raw}」保留原名，仅首列计入「{canon}」'
+                )
+                out.append(raw)
+                continue
+            used_subjects.add(canon)
+
+        out.append(canon)
+
+    if any(stripped[i] != out[i] for i in range(len(stripped))):
+        pairs = [(stripped[i], out[i]) for i in range(len(stripped)) if stripped[i] != out[i]]
+        logger.info(f'联盟数据表头归一映射: {pairs}')
+    return out
+
 
 def _normalize_student_name(val) -> str:
     if val is None:
@@ -528,28 +609,45 @@ def read_league_data(file_path: str) -> pd.DataFrame:
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(-1)
         
-        # 将列名转换为字符串，去除前后空格
-        df.columns = [str(col).strip() for col in df.columns]
+        # 列名先做 strip；再把「学校全称/考生姓名/信息技术」等别名归一为程序内字段（避免后续误合并）
+        stripped_cols = [str(col).strip() if col is not None else '' for col in df.columns]
+        df.columns = _normalize_league_column_series(stripped_cols)
         
-        logger.info(f"联盟数据原始列名: {list(df.columns)}")
+        logger.info(f"联盟数据原始列名（strip+别名后）: {list(df.columns)}")
         
-        # 预期的列名（用于标准化表头，学科与 SUBJECT_COLUMNS 一致）
-        expected_columns = ['学校', '姓名', '班级'] + SUBJECT_COLUMNS
-        
-        # 标准化列名映射
-        rename_map = {}
-        for actual_col in df.columns:
-            actual_col_str = str(actual_col).strip()
-            for expected in expected_columns:
-                # 精确匹配或包含匹配
-                if actual_col_str == expected or expected in actual_col_str:
-                    rename_map[actual_col] = expected
+        # 余下的非标准列名：仅作「科目名被子串包含」的补充匹配（如「思想政治」→政治），并排除明显的非成绩列（如政治面貌）
+        base_cols_expected = {'学校', '姓名', '班级'}
+        fuzzy_rename = {}
+        used_subj_for_fuzzy: set = {c for c in df.columns if c in SUBJECT_COLUMNS}
+        for col in list(df.columns):
+            if col in base_cols_expected or col in SUBJECT_COLUMNS:
+                continue
+            s = str(col).strip()
+            if not s:
+                continue
+            tgt = None
+            for expected in SUBJECT_COLUMNS:
+                if expected in s:
+                    if expected == '政治' and any(bad in s for bad in ('政治面貌', '面貌', '党团', '党员')):
+                        continue
+                    if expected == '技术':
+                        continue
+                    if len(expected) < 2 and expected != s:
+                        continue
+                    tgt = expected
                     break
+            if tgt is None and '技术' in s and ('信息' in s or '通用' in s):
+                tgt = '技术'
+            if tgt and tgt in df.columns and col != tgt:
+                tgt = None  # 已有标准列名 tgt，避免把「语文成绩」与「语文」合并成重复
+            if tgt and tgt not in used_subj_for_fuzzy:
+                fuzzy_rename[col] = tgt
+                used_subj_for_fuzzy.add(tgt)
+        if fuzzy_rename:
+            df = df.rename(columns=fuzzy_rename)
+            logger.info(f"联盟数据表头模糊匹配映射: {fuzzy_rename}")
         
-        # 重命名列
-        if rename_map:
-            df = df.rename(columns=rename_map)
-            logger.info(f"联盟数据重命名后的列名: {list(df.columns)}")
+        logger.info(f"联盟数据重命名后的列名: {list(df.columns)}")
         
         # 只保留基础列 + 白名单学科列（排除考号、7选3、联盟排名、门数等非学科列），总分由程序按学科相加计算
         base_cols = ['学校', '姓名', '班级']
@@ -558,8 +656,9 @@ def read_league_data(file_path: str) -> pd.DataFrame:
             df = df[all_keep].copy()
             logger.info(f"联盟数据保留列（仅学科白名单）: {[c for c in all_keep if c not in base_cols]}")
         else:
-            logger.warning("没有找到任何学科列，使用预期列")
-            all_keep = [col for col in expected_columns if col in df.columns]
+            logger.warning("没有找到任何学科列，尝试仅保留仍能识别的字段")
+            fallback = ['学校', '姓名', '班级'] + SUBJECT_COLUMNS
+            all_keep = [col for col in fallback if col in df.columns]
             if all_keep:
                 df = df[all_keep].copy()
         
@@ -1536,25 +1635,32 @@ def calculate_class_assessment(school_data: Dict[str, pd.DataFrame],
         subject_columns = [col for col in total_score_df.columns if col in SUBJECT_COLUMNS]
 
         if not subject_columns:
+            logger.warning(
+                "calculate_class_assessment: 合并后未发现任何学科列，无法计算班级考核。"
+                "请检查联盟表中成绩列是否与「语文」「数学」…「技术」等标准列名或可识别别名。"
+            )
             return {"class_results": [], "excluded_students": []}
-        
-        # 先筛除任一学科成绩缺失的学生（视为缺考）
-        valid_mask = total_score_df[subject_columns].notna().all(axis=1)
-        excluded_df = total_score_df[~valid_mask]
+
+        # 与「我校总分」分析口径一致：选考缺科按 NaN，总分用已有科目加权（英语日语只取一科），不强制全科都有分
+        total_score_df['总分'] = _compute_total_score(total_score_df, subject_columns)
+
+        # 剔除无法计算有效总分的学生（各学科均无分或折算后总分无效）
+        invalid_mask = total_score_df['总分'].isna() | (total_score_df['总分'] <= 0)
+        excluded_df = total_score_df[invalid_mask]
         for _, row in excluded_df.iterrows():
             excluded_students.append({
                 "姓名": str(row.get('姓名', '')).strip(),
                 "班级": _normalize_class_display(row.get('班级', '')),
-                "原因": "存在缺考或成绩缺失"
+                "原因": "各科成绩均为空或总分为0，无法计入考核"
             })
-        
-        total_score_df = total_score_df[valid_mask].copy()
-        
+        total_score_df = total_score_df[~invalid_mask].copy()
+
         if total_score_df.empty:
+            logger.warning(
+                "calculate_class_assessment: 按学科折算总分后参考人数为0。"
+                "可能原因：表头科目列未被识别导致无成绩列；或筛学校名后本校无匹配行。"
+            )
             return {"class_results": [], "excluded_students": excluded_students}
-        
-        # 计算总分（英语与日语并列只取一科）
-        total_score_df['总分'] = _compute_total_score(total_score_df, subject_columns)
     
     if total_score_df.empty or '班级' not in total_score_df.columns:
         return {"class_results": [], "excluded_students": excluded_students}
