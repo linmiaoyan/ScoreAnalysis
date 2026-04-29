@@ -28,6 +28,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 SNAPSHOT_FILE = os.path.join(UPLOAD_FOLDER, 'latest_snapshot.json')
+SCORE_FORM_PREFS_FILE = os.path.join(UPLOAD_FOLDER, 'last_score_form_prefs.json')
 ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
 
 # 确保上传文件夹存在
@@ -90,6 +91,80 @@ def allowed_file(filename):
 def index():
     """主页（允许 POST 以免表单误提交时返回 405）"""
     return render_template('index.html')
+
+
+def _default_score_form_prefs():
+    return {
+        'tekongLine': '',
+        'yiduanLine': '',
+        'excludedNames': '',
+        'subjectLines': {},
+        'schoolNames': None,
+    }
+
+
+def _read_score_form_prefs():
+    if not os.path.isfile(SCORE_FORM_PREFS_FILE):
+        return _default_score_form_prefs()
+    try:
+        with open(SCORE_FORM_PREFS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return _default_score_form_prefs()
+        out = _default_score_form_prefs()
+        out['tekongLine'] = str(data.get('tekongLine') or '').strip()
+        out['yiduanLine'] = str(data.get('yiduanLine') or '').strip()
+        if data.get('excludedNames') is not None:
+            out['excludedNames'] = str(data.get('excludedNames'))
+        sl = data.get('subjectLines')
+        out['subjectLines'] = sl if isinstance(sl, dict) else {}
+        sn = data.get('schoolNames')
+        if sn is not None:
+            out['schoolNames'] = sn if isinstance(sn, list) else None
+        return out
+    except Exception:
+        logger.warning('读取分数线偏好失败，使用默认值', exc_info=True)
+        return _default_score_form_prefs()
+
+
+@app.route('/api/score_form_prefs', methods=['GET'])
+def get_score_form_prefs():
+    """最近一次分数线等表单录入（服务端持久化，任意浏览器打开同一站点即可恢复）"""
+    try:
+        return jsonify({'success': True, 'prefs': _read_score_form_prefs()})
+    except Exception as e:
+        logger.error(f"读取表单偏好失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/score_form_prefs', methods=['POST'])
+def save_score_form_prefs():
+    try:
+        data = request.get_json()
+        if not isinstance(data, dict):
+            return jsonify({'success': False, 'message': '无效的JSON'}), 400
+        payload = _default_score_form_prefs()
+        payload['tekongLine'] = str(data.get('tekongLine') or '').strip()
+        payload['yiduanLine'] = str(data.get('yiduanLine') or '').strip()
+        if data.get('excludedNames') is not None:
+            payload['excludedNames'] = str(data.get('excludedNames'))
+        sl = data.get('subjectLines')
+        payload['subjectLines'] = sl if isinstance(sl, dict) else {}
+        sn = data.get('schoolNames')
+        if isinstance(sn, list):
+            payload['schoolNames'] = [str(x).strip() for x in sn if x and str(x).strip()]
+            if not payload['schoolNames']:
+                payload['schoolNames'] = None
+        elif sn is None:
+            payload['schoolNames'] = None
+        tmp = SCORE_FORM_PREFS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SCORE_FORM_PREFS_FILE)
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"保存表单偏好失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/save_snapshot', methods=['POST'])
@@ -631,9 +706,12 @@ def export_excel():
             # 导出各类分析结果
             sheet_idx = 0
             
-            # 1. 班级考核结果
+            # 1. 班级考核结果（顶行附上本次使用的特控线/一段线，便于存档对照）
             if 'class_assessment' in export_data:
                 assessment_data = export_data['class_assessment']
+                tek_a = export_data.get('class_assessment_tekong_line')
+                ydu_a = export_data.get('class_assessment_yiduan_line')
+
                 df_assessment = pd.DataFrame(assessment_data)
                 if not df_assessment.empty:
                     # 列名改为中文
@@ -647,6 +725,47 @@ def export_excel():
                         'yiduan_rate': '一段率(%)',
                         'assessment_score': '考核分'
                     })
+                    cols = list(df_assessment.columns)
+                    meta_rows = []
+                    if tek_a is not None and str(tek_a).strip() != '':
+                        try:
+                            tek_f = float(tek_a)
+                            r = {c: '' for c in cols}
+                            r['班级'] = f'本次统计使用的「特控线（总分）」：{tek_f:g}分'
+                            meta_rows.append(r)
+                        except (TypeError, ValueError):
+                            r = {c: '' for c in cols}
+                            r['班级'] = f'本次统计使用的「特控线（总分）」：{tek_a}'
+                            meta_rows.append(r)
+                    if ydu_a is not None and str(ydu_a).strip() != '':
+                        try:
+                            ydu_f = float(ydu_a)
+                            r = {c: '' for c in cols}
+                            r['班级'] = f'本次统计使用的「一段线（总分）」：{ydu_f:g}分'
+                            meta_rows.append(r)
+                        except (TypeError, ValueError):
+                            r = {c: '' for c in cols}
+                            r['班级'] = f'本次统计使用的「一段线（总分）」：{ydu_a}'
+                            meta_rows.append(r)
+                    if meta_rows:
+                        df_meta = pd.DataFrame(meta_rows)
+                        df_assessment = pd.concat([df_meta, df_assessment], ignore_index=True)
+                elif (tek_a or ydu_a) and df_assessment.empty:
+                    # 无班级数据时仍能导出说明行（避免表格“空白看不出线别”）
+                    cols = ['排名', '班级', '总人数', '特控过线人数', '特控率(%)', '一段过线人数', '一段率(%)', '考核分']
+                    meta_rows = []
+                    if tek_a is not None and str(tek_a).strip() != '':
+                        try:
+                            meta_rows.append({c: ('' if c != '班级' else f'本次统计使用的「特控线（总分）」：{float(tek_a):g}分') for c in cols})
+                        except (TypeError, ValueError):
+                            meta_rows.append({c: ('' if c != '班级' else f'本次统计使用的「特控线（总分）」：{tek_a}') for c in cols})
+                    if ydu_a is not None and str(ydu_a).strip() != '':
+                        try:
+                            meta_rows.append({c: ('' if c != '班级' else f'本次统计使用的「一段线（总分）」：{float(ydu_a):g}分') for c in cols})
+                        except (TypeError, ValueError):
+                            meta_rows.append({c: ('' if c != '班级' else f'本次统计使用的「一段线（总分）」：{ydu_a}') for c in cols})
+                    if meta_rows:
+                        df_assessment = pd.DataFrame(meta_rows)
                 df_assessment.to_excel(writer, sheet_name='班级考核结果', index=False)
                 sheet_idx += 1
             

@@ -307,6 +307,108 @@
             });
         }
         let analysisResults = {}; // 存储分析结果，用于导出
+
+        // 服务端记住最近一次分数线等录入（同一站点任意浏览器/设备可见；非机密数据）
+        const SCORE_FORM_LEGACY_LS_KEY = 'scoreAnalysis_lastScoreForm_v1';
+        let savePrefsTimer = null;
+        function buildScoreFormPayload() {
+            const tek = document.getElementById('tekongLine');
+            const ydu = document.getElementById('yiduanLine');
+            const ex = document.getElementById('excludedNames');
+            const schools = getSchoolNames();
+            return {
+                tekongLine: tek && tek.value ? String(tek.value).trim() : '',
+                yiduanLine: ydu && ydu.value ? String(ydu.value).trim() : '',
+                excludedNames: ex && ex.value ? ex.value : '',
+                subjectLines: JSON.parse(JSON.stringify(subjectLines || {})),
+                schoolNames: schools.length ? schools : null
+            };
+        }
+        function applyScoreFormPayload(payload) {
+            if (!payload || typeof payload !== 'object') return;
+            const tek = document.getElementById('tekongLine');
+            const ydu = document.getElementById('yiduanLine');
+            const ex = document.getElementById('excludedNames');
+            if (payload.yiduanLine != null && ydu) ydu.value = payload.yiduanLine;
+            if (payload.tekongLine != null && tek) tek.value = payload.tekongLine;
+            if (payload.excludedNames != null && ex) ex.value = payload.excludedNames;
+            if (payload.subjectLines && typeof payload.subjectLines === 'object') {
+                subjectLines = payload.subjectLines;
+            }
+            if (payload.schoolNames && Array.isArray(payload.schoolNames) && payload.schoolNames.length) {
+                const list = document.getElementById('schoolNamesList');
+                if (list) {
+                    list.innerHTML = '';
+                    payload.schoolNames.forEach(function(name) {
+                        const row = document.createElement('div');
+                        row.className = 'input-group input-group-sm mb-2 school-name-row';
+                        row.innerHTML = '<input type="text" class="form-control school-name-input" placeholder="学校名称或别名">' +
+                            '<button type="button" class="btn btn-outline-secondary btn-remove-school" title="删除该行" aria-label="删除">×</button>';
+                        const inp = row.querySelector('.school-name-input');
+                        if (inp) inp.value = name;
+                        list.appendChild(row);
+                    });
+                }
+            }
+            updateScoreLinesDisplay();
+            updateSubjectLinesDisplay();
+        }
+        function saveScoreFormCache() {
+            if (savePrefsTimer) clearTimeout(savePrefsTimer);
+            savePrefsTimer = setTimeout(function() {
+                savePrefsTimer = null;
+                const body = buildScoreFormPayload();
+                fetch('/api/score_form_prefs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                }).catch(function(e) { console.warn('保存分数线偏好失败', e); });
+            }, 400);
+        }
+        async function loadScoreFormCache() {
+            try {
+                const r = await fetch('/api/score_form_prefs');
+                const j = await r.json();
+                if (j.success && j.prefs) {
+                    const p = j.prefs;
+                    const empty = !((p.tekongLine || p.yiduanLine || p.excludedNames ||
+                        (p.subjectLines && Object.keys(p.subjectLines).length) ||
+                        (p.schoolNames && p.schoolNames.length)));
+                    if (!empty) {
+                        applyScoreFormPayload(p);
+                        return;
+                    }
+                }
+                // 迁移：若服务端尚无数据，尝试把本机旧版 localStorage 写回服务端一次
+                try {
+                    const raw = localStorage.getItem(SCORE_FORM_LEGACY_LS_KEY);
+                    if (raw) {
+                        const legacy = JSON.parse(raw);
+                        applyScoreFormPayload(legacy);
+                        await fetch('/api/score_form_prefs', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(buildScoreFormPayload())
+                        });
+                        localStorage.removeItem(SCORE_FORM_LEGACY_LS_KEY);
+                    }
+                } catch (e) { /* ignore */ }
+            } catch (e) {
+                console.warn('读取分数线偏好失败', e);
+            }
+        }
+        function bindScoreFormCacheSave() {
+            const tek = document.getElementById('tekongLine');
+            const ydu = document.getElementById('yiduanLine');
+            const ex = document.getElementById('excludedNames');
+            ['input', 'change'].forEach(ev => {
+                if (tek) tek.addEventListener(ev, saveScoreFormCache);
+                if (ydu) ydu.addEventListener(ev, saveScoreFormCache);
+                if (ex) ex.addEventListener(ev, saveScoreFormCache);
+            });
+            document.getElementById('schoolNamesList').addEventListener('input', saveScoreFormCache);
+            document.getElementById('schoolNamesList').addEventListener('change', saveScoreFormCache);
+        }
         
         // 学校名称/别名：收集所有非空输入
         function getSchoolNames() {
@@ -327,11 +429,13 @@
             row.innerHTML = '<input type="text" class="form-control school-name-input" placeholder="学校名称或别名">' +
                 '<button type="button" class="btn btn-outline-secondary btn-remove-school" title="删除该行" aria-label="删除">×</button>';
             list.appendChild(row);
+            saveScoreFormCache();
         });
         document.getElementById('schoolNamesList').addEventListener('click', function(e) {
             if (e.target.classList.contains('btn-remove-school')) {
                 const rows = document.querySelectorAll('.school-name-row');
                 if (rows.length > 1) e.target.closest('.school-name-row').remove();
+                saveScoreFormCache();
             }
         });
             
@@ -428,6 +532,7 @@
                         }
                     }
                     updateSubjectLinesDisplay();
+                    saveScoreFormCache();
                 });
             });
         }
@@ -440,6 +545,7 @@
                     const subject = input.getAttribute('data-subject');
                     input.value = subjectLines[lineType]?.[subject] || '';
                 });
+                saveScoreFormCache();
             });
         });
         
@@ -453,6 +559,7 @@
             if (confirm('确定要清空所有学科分数线吗？')) {
                 subjectLines = {};
                 updateSubjectLinesDisplay();
+                saveScoreFormCache();
             }
         });
         
@@ -497,16 +604,21 @@
                     delete subjectLines[lineName];
                 }
                 updateSubjectLinesDisplay();
+                saveScoreFormCache();
             }
         }
         
         // 将removeSubjectLine函数暴露到全局作用域
         window.removeSubjectLine = removeSubjectLine;
         
-        // 初始化显示
-        updateScoreLinesDisplay();
-        generateSubjectLinesInputs();
-        updateSubjectLinesDisplay();
+        // 初始化显示：先从服务端恢复表单，再生成学科线输入框
+        bindScoreFormCacheSave();
+        (async function() {
+            await loadScoreFormCache();
+            updateScoreLinesDisplay();
+            generateSubjectLinesInputs();
+            updateSubjectLinesDisplay();
+        })();
         
         
         // 文件上传（仅联盟全体数据）- 用按钮点击触发，避免表单 POST 到 /
@@ -806,6 +918,7 @@
                         resultsArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }, 100);
                 }
+                saveScoreFormCache();
             } catch (error) {
                 console.error('分析过程出错:', error);
                 alert('分析失败: ' + error.message);
@@ -3276,6 +3389,8 @@
                     body: JSON.stringify({
                         export_data: {
                             class_assessment: analysisResults.classAssessment || [],
+                            class_assessment_tekong_line: document.getElementById('tekongLine') && document.getElementById('tekongLine').value ? document.getElementById('tekongLine').value : null,
+                            class_assessment_yiduan_line: document.getElementById('yiduanLine') && document.getElementById('yiduanLine').value ? document.getElementById('yiduanLine').value : null,
                             class_subjects_tekong: analysisResults.classSubjectsTekong || {},
                             class_subjects_yiduan: analysisResults.classSubjectsYiduan || {},
                             subject_lines_tekong: analysisResults.subjectLinesTekong || {},
