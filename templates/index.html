@@ -307,6 +307,75 @@
             });
         }
         let analysisResults = {}; // 存储分析结果，用于导出
+
+        // 本地记住最近一次分数线录入（单用户使用，避免每次重填）
+        const SCORE_FORM_CACHE_KEY = 'scoreAnalysis_lastScoreForm_v1';
+        function saveScoreFormCache() {
+            try {
+                const tek = document.getElementById('tekongLine');
+                const ydu = document.getElementById('yiduanLine');
+                const ex = document.getElementById('excludedNames');
+                const schools = getSchoolNames();
+                const payload = {
+                    tekongLine: tek && tek.value ? String(tek.value).trim() : '',
+                    yiduanLine: ydu && ydu.value ? String(ydu.value).trim() : '',
+                    excludedNames: ex && ex.value ? ex.value : '',
+                    subjectLines: JSON.parse(JSON.stringify(subjectLines || {})),
+                    schoolNames: schools.length ? schools : null
+                };
+                localStorage.setItem(SCORE_FORM_CACHE_KEY, JSON.stringify(payload));
+            } catch (e) {
+                console.warn('保存分数线缓存失败', e);
+            }
+        }
+        function loadScoreFormCache() {
+            try {
+                const raw = localStorage.getItem(SCORE_FORM_CACHE_KEY);
+                if (!raw) return;
+                const payload = JSON.parse(raw);
+                const tek = document.getElementById('tekongLine');
+                const ydu = document.getElementById('yiduanLine');
+                const ex = document.getElementById('excludedNames');
+                if (payload.yiduanLine != null && ydu) ydu.value = payload.yiduanLine;
+                if (payload.tekongLine != null && tek) tek.value = payload.tekongLine;
+                if (payload.excludedNames != null && ex) ex.value = payload.excludedNames;
+                if (payload.subjectLines && typeof payload.subjectLines === 'object') {
+                    subjectLines = payload.subjectLines;
+                }
+                // 学校名称行：有缓存则替换为一行列表
+                    if (payload.schoolNames && Array.isArray(payload.schoolNames) && payload.schoolNames.length) {
+                    const list = document.getElementById('schoolNamesList');
+                    if (list) {
+                        list.innerHTML = '';
+                        payload.schoolNames.forEach(function(name) {
+                            const row = document.createElement('div');
+                            row.className = 'input-group input-group-sm mb-2 school-name-row';
+                            row.innerHTML = '<input type="text" class="form-control school-name-input" placeholder="学校名称或别名">' +
+                                '<button type="button" class="btn btn-outline-secondary btn-remove-school" title="删除该行" aria-label="删除">×</button>';
+                            const inp = row.querySelector('.school-name-input');
+                            if (inp) inp.value = name;
+                            list.appendChild(row);
+                        });
+                    }
+                }
+                updateScoreLinesDisplay();
+                updateSubjectLinesDisplay();
+            } catch (e) {
+                console.warn('读取分数线缓存失败', e);
+            }
+        }
+        function bindScoreFormCacheSave() {
+            const tek = document.getElementById('tekongLine');
+            const ydu = document.getElementById('yiduanLine');
+            const ex = document.getElementById('excludedNames');
+            ['input', 'change'].forEach(ev => {
+                if (tek) tek.addEventListener(ev, saveScoreFormCache);
+                if (ydu) ydu.addEventListener(ev, saveScoreFormCache);
+                if (ex) ex.addEventListener(ev, saveScoreFormCache);
+            });
+            document.getElementById('schoolNamesList').addEventListener('input', saveScoreFormCache);
+            document.getElementById('schoolNamesList').addEventListener('change', saveScoreFormCache);
+        }
         
         // 学校名称/别名：收集所有非空输入
         function getSchoolNames() {
@@ -428,6 +497,7 @@
                         }
                     }
                     updateSubjectLinesDisplay();
+                    saveScoreFormCache();
                 });
             });
         }
@@ -453,6 +523,7 @@
             if (confirm('确定要清空所有学科分数线吗？')) {
                 subjectLines = {};
                 updateSubjectLinesDisplay();
+                saveScoreFormCache();
             }
         });
         
@@ -497,13 +568,16 @@
                     delete subjectLines[lineName];
                 }
                 updateSubjectLinesDisplay();
+                saveScoreFormCache();
             }
         }
         
         // 将removeSubjectLine函数暴露到全局作用域
         window.removeSubjectLine = removeSubjectLine;
         
-        // 初始化显示
+        // 初始化显示（先恢复快照表单，避免每次进入页面重复填写分数线）
+        loadScoreFormCache();
+        bindScoreFormCacheSave();
         updateScoreLinesDisplay();
         generateSubjectLinesInputs();
         updateSubjectLinesDisplay();
@@ -806,6 +880,7 @@
                         resultsArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }, 100);
                 }
+                saveScoreFormCache();
             } catch (error) {
                 console.error('分析过程出错:', error);
                 alert('分析失败: ' + error.message);
@@ -3276,6 +3351,8 @@
                     body: JSON.stringify({
                         export_data: {
                             class_assessment: analysisResults.classAssessment || [],
+                            class_assessment_tekong_line: document.getElementById('tekongLine') && document.getElementById('tekongLine').value ? document.getElementById('tekongLine').value : null,
+                            class_assessment_yiduan_line: document.getElementById('yiduanLine') && document.getElementById('yiduanLine').value ? document.getElementById('yiduanLine').value : null,
                             class_subjects_tekong: analysisResults.classSubjectsTekong || {},
                             class_subjects_yiduan: analysisResults.classSubjectsYiduan || {},
                             subject_lines_tekong: analysisResults.subjectLinesTekong || {},

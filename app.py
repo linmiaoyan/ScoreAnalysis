@@ -631,9 +631,12 @@ def export_excel():
             # 导出各类分析结果
             sheet_idx = 0
             
-            # 1. 班级考核结果
+            # 1. 班级考核结果（顶行附上本次使用的特控线/一段线，便于存档对照）
             if 'class_assessment' in export_data:
                 assessment_data = export_data['class_assessment']
+                tek_a = export_data.get('class_assessment_tekong_line')
+                ydu_a = export_data.get('class_assessment_yiduan_line')
+
                 df_assessment = pd.DataFrame(assessment_data)
                 if not df_assessment.empty:
                     # 列名改为中文
@@ -647,6 +650,47 @@ def export_excel():
                         'yiduan_rate': '一段率(%)',
                         'assessment_score': '考核分'
                     })
+                    cols = list(df_assessment.columns)
+                    meta_rows = []
+                    if tek_a is not None and str(tek_a).strip() != '':
+                        try:
+                            tek_f = float(tek_a)
+                            r = {c: '' for c in cols}
+                            r['班级'] = f'本次统计使用的「特控线（总分）」：{tek_f:g}分'
+                            meta_rows.append(r)
+                        except (TypeError, ValueError):
+                            r = {c: '' for c in cols}
+                            r['班级'] = f'本次统计使用的「特控线（总分）」：{tek_a}'
+                            meta_rows.append(r)
+                    if ydu_a is not None and str(ydu_a).strip() != '':
+                        try:
+                            ydu_f = float(ydu_a)
+                            r = {c: '' for c in cols}
+                            r['班级'] = f'本次统计使用的「一段线（总分）」：{ydu_f:g}分'
+                            meta_rows.append(r)
+                        except (TypeError, ValueError):
+                            r = {c: '' for c in cols}
+                            r['班级'] = f'本次统计使用的「一段线（总分）」：{ydu_a}'
+                            meta_rows.append(r)
+                    if meta_rows:
+                        df_meta = pd.DataFrame(meta_rows)
+                        df_assessment = pd.concat([df_meta, df_assessment], ignore_index=True)
+                elif (tek_a or ydu_a) and df_assessment.empty:
+                    # 无班级数据时仍能导出说明行（避免表格“空白看不出线别”）
+                    cols = ['排名', '班级', '总人数', '特控过线人数', '特控率(%)', '一段过线人数', '一段率(%)', '考核分']
+                    meta_rows = []
+                    if tek_a is not None and str(tek_a).strip() != '':
+                        try:
+                            meta_rows.append({c: ('' if c != '班级' else f'本次统计使用的「特控线（总分）」：{float(tek_a):g}分') for c in cols})
+                        except (TypeError, ValueError):
+                            meta_rows.append({c: ('' if c != '班级' else f'本次统计使用的「特控线（总分）」：{tek_a}') for c in cols})
+                    if ydu_a is not None and str(ydu_a).strip() != '':
+                        try:
+                            meta_rows.append({c: ('' if c != '班级' else f'本次统计使用的「一段线（总分）」：{float(ydu_a):g}分') for c in cols})
+                        except (TypeError, ValueError):
+                            meta_rows.append({c: ('' if c != '班级' else f'本次统计使用的「一段线（总分）」：{ydu_a}') for c in cols})
+                    if meta_rows:
+                        df_assessment = pd.DataFrame(meta_rows)
                 df_assessment.to_excel(writer, sheet_name='班级考核结果', index=False)
                 sheet_idx += 1
             
