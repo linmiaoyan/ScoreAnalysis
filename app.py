@@ -28,6 +28,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 SNAPSHOT_FILE = os.path.join(UPLOAD_FOLDER, 'latest_snapshot.json')
+SCORE_FORM_PREFS_FILE = os.path.join(UPLOAD_FOLDER, 'last_score_form_prefs.json')
 ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
 
 # 确保上传文件夹存在
@@ -90,6 +91,80 @@ def allowed_file(filename):
 def index():
     """主页（允许 POST 以免表单误提交时返回 405）"""
     return render_template('index.html')
+
+
+def _default_score_form_prefs():
+    return {
+        'tekongLine': '',
+        'yiduanLine': '',
+        'excludedNames': '',
+        'subjectLines': {},
+        'schoolNames': None,
+    }
+
+
+def _read_score_form_prefs():
+    if not os.path.isfile(SCORE_FORM_PREFS_FILE):
+        return _default_score_form_prefs()
+    try:
+        with open(SCORE_FORM_PREFS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return _default_score_form_prefs()
+        out = _default_score_form_prefs()
+        out['tekongLine'] = str(data.get('tekongLine') or '').strip()
+        out['yiduanLine'] = str(data.get('yiduanLine') or '').strip()
+        if data.get('excludedNames') is not None:
+            out['excludedNames'] = str(data.get('excludedNames'))
+        sl = data.get('subjectLines')
+        out['subjectLines'] = sl if isinstance(sl, dict) else {}
+        sn = data.get('schoolNames')
+        if sn is not None:
+            out['schoolNames'] = sn if isinstance(sn, list) else None
+        return out
+    except Exception:
+        logger.warning('读取分数线偏好失败，使用默认值', exc_info=True)
+        return _default_score_form_prefs()
+
+
+@app.route('/api/score_form_prefs', methods=['GET'])
+def get_score_form_prefs():
+    """最近一次分数线等表单录入（服务端持久化，任意浏览器打开同一站点即可恢复）"""
+    try:
+        return jsonify({'success': True, 'prefs': _read_score_form_prefs()})
+    except Exception as e:
+        logger.error(f"读取表单偏好失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/score_form_prefs', methods=['POST'])
+def save_score_form_prefs():
+    try:
+        data = request.get_json()
+        if not isinstance(data, dict):
+            return jsonify({'success': False, 'message': '无效的JSON'}), 400
+        payload = _default_score_form_prefs()
+        payload['tekongLine'] = str(data.get('tekongLine') or '').strip()
+        payload['yiduanLine'] = str(data.get('yiduanLine') or '').strip()
+        if data.get('excludedNames') is not None:
+            payload['excludedNames'] = str(data.get('excludedNames'))
+        sl = data.get('subjectLines')
+        payload['subjectLines'] = sl if isinstance(sl, dict) else {}
+        sn = data.get('schoolNames')
+        if isinstance(sn, list):
+            payload['schoolNames'] = [str(x).strip() for x in sn if x and str(x).strip()]
+            if not payload['schoolNames']:
+                payload['schoolNames'] = None
+        elif sn is None:
+            payload['schoolNames'] = None
+        tmp = SCORE_FORM_PREFS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SCORE_FORM_PREFS_FILE)
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"保存表单偏好失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/save_snapshot', methods=['POST'])
