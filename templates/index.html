@@ -158,8 +158,9 @@
     {% endif %}
     <div class="container">
         {% if snapshot_mode %}
-        <div class="alert alert-info mb-3">
-            <span>成绩分析结果快照 · 仅供查看</span>
+        <div class="alert alert-info mb-3 d-flex flex-wrap align-items-center gap-3">
+            <span class="flex-grow-1">成绩分析结果快照 · 仅供查看（可导出与当时分析一致的 Excel）</span>
+            <button type="button" class="btn btn-success" id="exportSnapshotBtn">导出Excel</button>
         </div>
         {% endif %}
         <div id="uploadSection">
@@ -3433,42 +3434,45 @@
             }
         });
 
-        // 导出Excel
-        document.getElementById('exportBtn').addEventListener('click', async function() {
+        function exportExcelPayloadFromAnalysisResults(ar) {
+            var tekEl = document.getElementById('tekongLine');
+            var yduEl = document.getElementById('yiduanLine');
+            var tk = tekEl && tekEl.value ? String(tekEl.value).trim() : null;
+            var yd = yduEl && yduEl.value ? String(yduEl.value).trim() : null;
+            return {
+                class_assessment: ar.classAssessment || [],
+                class_assessment_tekong_line: tk,
+                class_assessment_yiduan_line: yd,
+                class_subjects_tekong: ar.classSubjectsTekong || {},
+                class_subjects_yiduan: ar.classSubjectsYiduan || {},
+                subject_lines_tekong: ar.subjectLinesTekong || {},
+                subject_lines_yiduan: ar.subjectLinesYiduan || {},
+                league_subject_summary: (ar.leagueAnalysis && ar.leagueAnalysis.subject_line_rankings) || {},
+                league_analysis: ar.leagueAnalysis || {},
+                league_tekong_line: tk,
+                league_yiduan_line: yd
+            };
+        }
+
+        async function runExportExcel() {
             if (!analysisResults || Object.keys(analysisResults).length === 0) {
-                alert('没有可导出的数据，请先进行分析');
+                alert('没有可导出的数据');
                 return;
             }
-            
             try {
                 const response = await fetch('/export_excel', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        export_data: {
-                            class_assessment: analysisResults.classAssessment || [],
-                            class_assessment_tekong_line: document.getElementById('tekongLine') && document.getElementById('tekongLine').value ? document.getElementById('tekongLine').value : null,
-                            class_assessment_yiduan_line: document.getElementById('yiduanLine') && document.getElementById('yiduanLine').value ? document.getElementById('yiduanLine').value : null,
-                            class_subjects_tekong: analysisResults.classSubjectsTekong || {},
-                            class_subjects_yiduan: analysisResults.classSubjectsYiduan || {},
-                            subject_lines_tekong: analysisResults.subjectLinesTekong || {},
-                            subject_lines_yiduan: analysisResults.subjectLinesYiduan || {},
-                            // 校际各学科汇总（特控线 / 一段线），来自联盟分析结果
-                            league_subject_summary: (analysisResults.leagueAnalysis && analysisResults.leagueAnalysis.subject_line_rankings) || {},
-                            // 各校对比总表及学科表导出：联盟分析 + 特控/一段分数线（导出时从表单读取）
-                            league_analysis: analysisResults.leagueAnalysis || {},
-                            league_tekong_line: document.getElementById('tekongLine') && document.getElementById('tekongLine').value ? document.getElementById('tekongLine').value : null,
-                            league_yiduan_line: document.getElementById('yiduanLine') && document.getElementById('yiduanLine').value ? document.getElementById('yiduanLine').value : null
-                        }
+                        export_data: exportExcelPayloadFromAnalysisResults(analysisResults)
                     })
                 });
-                
                 if (response.ok) {
                     const blob = await response.blob();
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `成绩分析结果_${new Date().toISOString().slice(0,10)}.xlsx`;
+                    a.download = '成绩分析结果_' + new Date().toISOString().slice(0,10) + '.xlsx';
                     document.body.appendChild(a);
                     a.click();
                     window.URL.revokeObjectURL(url);
@@ -3481,11 +3485,43 @@
                 console.error('导出失败:', error);
                 alert('导出失败: ' + error.message);
             }
+        }
+
+        document.getElementById('exportBtn').addEventListener('click', function() {
+            runExportExcel();
         });
+
+        var exportSnapshotBtnEl = document.getElementById('exportSnapshotBtn');
+        if (exportSnapshotBtnEl) {
+            exportSnapshotBtnEl.addEventListener('click', function() {
+                runExportExcel();
+            });
+        }
         
-        // 快照模式：用服务端注入的数据渲染结果
+        // 快照模式：用服务端注入的数据渲染结果（并回填 analysisResults，便于导出与同口径 Excel）
         if (window.__SNAPSHOT__ && typeof displayNewResults === 'function') {
             var s = window.__SNAPSHOT__;
+            analysisResults = {
+                schoolTotal: s.schoolTotalAnalysis || null,
+                subjectLinesTekong: s.subjectLinesTekong || null,
+                subjectLinesYiduan: s.subjectLinesYiduan || null,
+                classSubjectsTekong: s.classSubjectsTekong || null,
+                classSubjectsYiduan: s.classSubjectsYiduan || null,
+                classAssessment: s.classAssessment || null,
+                excludedStudents: s.excludedStudents || null,
+                leagueAnalysis: s.leagueAnalysis || null,
+                excludedNames: s.excludedNames || []
+            };
+            try {
+                var tSnap = document.getElementById('tekongLine');
+                var ySnap = document.getElementById('yiduanLine');
+                if (tSnap != null && s.tekongLine !== undefined && s.tekongLine !== null) {
+                    tSnap.value = String(s.tekongLine);
+                }
+                if (ySnap != null && s.yiduanLine !== undefined && s.yiduanLine !== null) {
+                    ySnap.value = String(s.yiduanLine);
+                }
+            } catch (e) {}
             // 尝试回填剔除名单输入框（只读快照也方便查看口径）
             try {
                 var exEl = document.getElementById('excludedNames');
